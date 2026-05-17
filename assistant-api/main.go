@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"personal-offline-ai/assistant-api/internal/memory"
 )
 
 const ollamaURL = "http://ollama:11434/api/generate"
@@ -31,23 +32,28 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 func chatHandler(w http.ResponseWriter, r *http.Request) {
 	var chatReq ChatRequest
 
-	err := json.NewDecoder(r.Body).Decode(&chatReq)
-	if err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
+	json.NewDecoder(r.Body).Decode(&chatReq)
+
+	// Save user message
+	saveMessage("user", chatReq.Prompt)
+
+	// Get memory
+	messages := getLastMessages(10)
+
+	// Build context
+	context := ""
+
+	for _, m := range messages {
+		context += m.Role + ": " + m.Content + "\n"
 	}
 
 	ollamaReq := OllamaRequest{
 		Model:  "qwen2.5:3b",
-		Prompt: chatReq.Prompt,
+		Prompt: context + "\nassistant:",
 		Stream: false,
 	}
 
-	reqBody, err := json.Marshal(ollamaReq)
-	if err != nil {
-		http.Error(w, "failed to marshal request", http.StatusInternalServerError)
-		return
-	}
+	reqBody, _ := json.Marshal(ollamaReq)
 
 	resp, err := http.Post(
 		ollamaURL,
@@ -56,34 +62,72 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err != nil {
-		http.Error(w, "failed to call ollama", http.StatusInternalServerError)
+		http.Error(w, "ollama error", 500)
 		return
 	}
 
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		http.Error(w, "failed to read response", http.StatusInternalServerError)
-		return
+	body, _ := io.ReadAll(resp.Body)
+
+	var result map[string]interface{}
+	json.Unmarshal(body, &result)
+
+	responseText := ""
+	if r, ok := result["response"].(string); ok {
+		responseText = r
 	}
 
-	var ollamaResp OllamaResponse
-
-	err = json.Unmarshal(body, &ollamaResp)
-	if err != nil {
-		http.Error(w, "failed to parse ollama response", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
+	// Save assistant response
+	saveMessage("assistant", responseText)
 
 	json.NewEncoder(w).Encode(map[string]string{
-		"response": ollamaResp.Response,
+		"response": responseText,
 	})
 }
 
+func saveMessage(role, content string) {
+	_, err := memory.DB.Exec(
+		"INSERT INTO messages(role, content) VALUES(?, ?)",
+		role, content,
+	)
+
+	if err != nil {
+		log.Println("DB insert error:", err)
+	}
+}
+
+func getLastMessages(limit int) []memory.Message {
+	rows, err := memory.DB.Query(
+		"SELECT role, content FROM messages ORDER BY id DESC LIMIT ?",
+		limit,
+	)
+
+	if err != nil {
+		log.Println(err)
+		return nil
+	}
+	defer rows.Close()
+
+	var messages []memory.Message
+
+	for rows.Next() {
+		var m memory.Message
+		rows.Scan(&m.Role, &m.Content)
+		messages = append(messages, m)
+	}
+
+	// reverse order
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
+
+	return messages
+}
+
 func main() {
+	memory.InitDB()
+
 	http.HandleFunc("/", healthHandler)
 	http.HandleFunc("/chat", chatHandler)
 

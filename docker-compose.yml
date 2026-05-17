@@ -23,6 +23,16 @@ services:
       - open_webui_data:/app/backend/data
     restart: unless-stopped
 
+  assistant-api:
+    build:
+      context: ./assistant-api
+    container_name: assistant-api
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
 volumes:
   ollama_data:
   open_webui_data:

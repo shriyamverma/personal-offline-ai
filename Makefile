@@ -1,7 +1,13 @@
 .PHONY: up down rebuild logs ps clean chat shell
 
+build:
+	docker compose build assistant-api
+
 up:
-	docker compose up -d
+	docker compose up
+
+dev:
+	docker compose up -d --build assistant-api
 
 down:
 	docker compose down

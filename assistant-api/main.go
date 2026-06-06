@@ -3,16 +3,26 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
 	"personal-offline-ai/assistant-api/internal/memory"
+	"personal-offline-ai/assistant-api/internal/tools"
+	"strings"
 )
 
 const ollamaURL = "http://ollama:11434/api/generate"
 
+type ToolRequest struct {
+	Tool string `json:"tool"`
+	Path string `json:"path,omitempty"`
+	Cmd  string `json:"command,omitempty"`
+}
+
 type ChatRequest struct {
-	Prompt string `json:"prompt"`
+	Prompt string      `json:"prompt"`
+	Tool   ToolRequest `json:"tool"`
 }
 
 type OllamaRequest struct {
@@ -32,17 +42,43 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 func chatHandler(w http.ResponseWriter, r *http.Request) {
 	var chatReq ChatRequest
 
-	json.NewDecoder(r.Body).Decode(&chatReq)
+	err := json.NewDecoder(r.Body).Decode(&chatReq)
+	if err != nil {
+		log.Println("❌ JSON decode error:", err)
+		http.Error(w, "invalid request", 400)
+		return
+	}
 
-	// Save user message
+	log.Printf("📥 FULL REQUEST: %+v\n", chatReq)
+	log.Printf("🔧 TOOL RECEIVED: %+v\n", chatReq.Tool)
+	log.Println("PROMPT:", chatReq.Prompt)
+
+	// =========================
+	// TOOL EXECUTION LAYER
+	// =========================
+	if strings.TrimSpace(chatReq.Tool.Tool) != "" {
+		log.Println("🚀 TOOL TRIGGERED:", chatReq.Tool.Tool)
+
+		output, err := executeTool(chatReq.Tool)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]string{
+			"response": output,
+		})
+		return
+	}
+
+	// =========================
+	// MEMORY LAYER
+	// =========================
 	saveMessage("user", chatReq.Prompt)
 
-	// Get memory
 	messages := getLastMessages(10)
 
-	// Build context
 	context := ""
-
 	for _, m := range messages {
 		context += m.Role + ": " + m.Content + "\n"
 	}
@@ -78,13 +114,35 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		responseText = r
 	}
 
-	// Save assistant response
 	saveMessage("assistant", responseText)
 
 	json.NewEncoder(w).Encode(map[string]string{
 		"response": responseText,
 	})
 }
+
+func executeTool(t ToolRequest) (string, error) {
+
+	tool, exists := tools.Registry[t.Tool]
+	if !exists {
+		return "unknown tool", nil
+	}
+
+	result := tool.Execute(tools.ExecuteParams{
+		Path:    t.Path,
+		Command: t.Cmd,
+	})
+
+	if result.Error != "" {
+		return "", errors.New(result.Error)
+	}
+
+	return result.Output, nil
+}
+
+// =========================
+// MEMORY
+// =========================
 
 func saveMessage(role, content string) {
 	_, err := memory.DB.Exec(
@@ -117,7 +175,6 @@ func getLastMessages(limit int) []memory.Message {
 		messages = append(messages, m)
 	}
 
-	// reverse order
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
@@ -133,8 +190,5 @@ func main() {
 
 	log.Println("assistant-api running on :8000")
 
-	err := http.ListenAndServe(":8000", nil)
-	if err != nil {
-		log.Fatal(err)
-	}
+	log.Fatal(http.ListenAndServe(":8000", nil))
 }

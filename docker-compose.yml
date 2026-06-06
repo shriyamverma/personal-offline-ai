@@ -1,17 +1,23 @@
 services:
   ollama:
-    build:
-      context: ./ollama
+    image: ollama/ollama
     container_name: ollama
     ports:
-      - "127.0.0.1:11434:11434"
+      - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
+  
+  ollama-init:
+    image: alpine:3.20
+    depends_on:
+      - ollama
+    volumes:
+      - ./ollama/bootstrap.sh:/bootstrap.sh
+    entrypoint: ["/bin/sh", "/bootstrap.sh"]
 
   open-webui:
-    build:
-      context: ./open-webui
+    image: ghcr.io/open-webui/open-webui:v0.9.6
     container_name: open-webui
     depends_on:
       - ollama
@@ -31,7 +37,10 @@ services:
       - "127.0.0.1:8000:8000"
     depends_on:
       - ollama
+      - ollama-init
     restart: unless-stopped
+    volumes:
+      - ./:/workspace
 
 volumes:
   ollama_data:

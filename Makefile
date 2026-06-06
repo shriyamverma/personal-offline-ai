@@ -30,5 +30,11 @@ chat:
 	-H "Content-Type: application/json" \
 	-d '{"prompt":"Hello"}'
 
+tool:
+	curl -X POST http://localhost:8000/chat \
+	-H "Content-Type: application/json" \
+	-d '{"prompt":"read file","tool":{"tool":"read_file","path":"assistant-api/main.go"}}'
+
+# it is NOT real shell execution tool, just container access
 shell:
 	docker exec -it assistant-api sh

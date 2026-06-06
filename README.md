@@ -175,30 +175,41 @@ Example response:
 
 # Memory System
 
-The assistant stores:
+The assistant stores conversation history using SQLite.
 
-* user messages
-* assistant responses
-* embeddings
-* timestamps
+Current capabilities:
+- Stores user messages
+- Stores assistant responses
+- Builds short-term conversational context from last N messages
 
-Memory is persisted using SQLite.
+---
 
-The system retrieves semantically relevant memories using embeddings before generating responses.
+# Tool System
+
+This project includes a pluggable tool execution system.
+
+## Current tools:
+- read_file: Reads files from workspace directory
+- list_files: Lists files and directories inside workspace
+- (future) shell execution (planned but disabled for safety)
+
+## Architecture:
+User → API → Tool Router → Tool Registry → Tool Execution → Response
 
 ---
 
 # Makefile Commands
 
-| Command        | Description                    |
-| -------------- | ------------------------------ |
-| `make up`      | Start services                 |
-| `make down`    | Stop services                  |
-| `make rebuild` | Rebuild all containers         |
-| `make logs`    | View logs                      |
-| `make ps`      | View running containers        |
-| `make clean`   | Remove containers and volumes  |
-| `make shell`   | Open assistant container shell |
-| `make chat`    | Test chat endpoint             |
+| Command        | Description                             |
+| -------------- | --------------------------------------- |
+| `make up`      | Start services                          |
+| `make down`    | Stop services                           |
+| `make rebuild` | Rebuild all containers                  |
+| `make logs`    | View logs                               |
+| `make ps`      | View running containers                 |
+| `make clean`   | Remove containers and volumes           |
+| `make shell`   | Open assistant container shell          |
+| `make chat`    | Test chat endpoint                      |
+| `make tool`    | Test tool execution (read_file via API) |
 
 ---

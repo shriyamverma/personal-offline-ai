@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"personal-offline-ai/assistant-api/internal/agent"
 	"personal-offline-ai/assistant-api/internal/memory"
 	"personal-offline-ai/assistant-api/internal/tools"
 	"strings"
@@ -54,10 +55,11 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("PROMPT:", chatReq.Prompt)
 
 	// =========================
-	// TOOL EXECUTION LAYER
+	// Explicit tool request
 	// =========================
 	if strings.TrimSpace(chatReq.Tool.Tool) != "" {
-		log.Println("🚀 TOOL TRIGGERED:", chatReq.Tool.Tool)
+
+		log.Println("🚀 Explicit tool:", chatReq.Tool.Tool)
 
 		output, err := executeTool(chatReq.Tool)
 		if err != nil {
@@ -67,6 +69,93 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 
 		json.NewEncoder(w).Encode(map[string]string{
 			"response": output,
+		})
+
+		return
+	}
+
+	// =========================
+	// Planner
+	// =========================
+
+	plan, err := agent.PlanTool(chatReq.Prompt)
+
+	if err != nil {
+		log.Println("Planner error:", err)
+	} else if plan != nil && plan.UseTool && plan.Tool != "" {
+
+		log.Printf("🤖 Planner selected tool: %+v\n", plan)
+
+		// =========================
+		// TOOL EXECUTION
+		// =========================
+
+		toolOutput, err := executeTool(ToolRequest{
+			Tool: plan.Tool,
+			Path: plan.Path,
+			Cmd:  plan.Command,
+		})
+
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+
+		// =========================
+		// SECOND LLM CALL (AGENT STEP)
+		// =========================
+
+		agentPrompt := `
+You are a helpful assistant.
+
+User request:
+` + chatReq.Prompt + `
+
+Tool used:
+` + plan.Tool + `
+
+Tool output:
+` + toolOutput + `
+
+Now provide a clear, helpful answer to the user.
+`
+
+		ollamaReq := OllamaRequest{
+			Model:  "qwen2.5:3b",
+			Prompt: agentPrompt,
+			Stream: false,
+		}
+
+		reqBody, _ := json.Marshal(ollamaReq)
+
+		resp, err := http.Post(
+			ollamaURL,
+			"application/json",
+			bytes.NewBuffer(reqBody),
+		)
+
+		if err != nil {
+			http.Error(w, "ollama error", 500)
+			return
+		}
+
+		defer resp.Body.Close()
+
+		body, _ := io.ReadAll(resp.Body)
+
+		var result map[string]interface{}
+		json.Unmarshal(body, &result)
+
+		responseText := ""
+		if r, ok := result["response"].(string); ok {
+			responseText = r
+		}
+
+		// Save assistant response
+		saveMessage("assistant", responseText)
+
+		json.NewEncoder(w).Encode(map[string]string{
+			"response": responseText,
 		})
 		return
 	}

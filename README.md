@@ -201,7 +201,7 @@ User → API → Tool Router → Tool Registry → Tool Execution → Response
 # Makefile Commands
 
 | Command        | Description                             |
-| -------------- | --------------------------------------- |
+|----------------|-----------------------------------------|
 | `make up`      | Start services                          |
 | `make down`    | Stop services                           |
 | `make rebuild` | Rebuild all containers                  |
@@ -211,5 +211,6 @@ User → API → Tool Router → Tool Registry → Tool Execution → Response
 | `make shell`   | Open assistant container shell          |
 | `make chat`    | Test chat endpoint                      |
 | `make tool`    | Test tool execution (read_file via API) |
+| `make agent`   | Test the agent endpoint                 |
 
 ---

@@ -50,16 +50,17 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("📥 FULL REQUEST: %+v\n", chatReq)
-	log.Printf("🔧 TOOL RECEIVED: %+v\n", chatReq.Tool)
-	log.Println("PROMPT:", chatReq.Prompt)
+	log.Printf("📥 REQUEST: %+v\n", chatReq)
 
-	// =========================
-	// Explicit tool request
-	// =========================
+	var toolOutput string
+	var toolUsed bool
+
+	// =====================================================
+	// 1. DIRECT TOOL CALL (HIGHEST PRIORITY)
+	// =====================================================
 	if strings.TrimSpace(chatReq.Tool.Tool) != "" {
 
-		log.Println("🚀 Explicit tool:", chatReq.Tool.Tool)
+		log.Println("🚀 DIRECT TOOL:", chatReq.Tool.Tool)
 
 		output, err := executeTool(chatReq.Tool)
 		if err != nil {
@@ -67,62 +68,84 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// ⚠️ DIRECT TOOL MUST EXIT IMMEDIATELY
 		json.NewEncoder(w).Encode(map[string]string{
 			"response": output,
 		})
-
 		return
+	} else {
+
+		// =====================================================
+		// 2. HYBRID ROUTER (FAST PATH)
+		// =====================================================
+		decision, ok := agent.Route(chatReq.Prompt)
+
+		if ok && decision.UseTool {
+
+			log.Println("⚡ ROUTER TOOL:", decision.Tool)
+
+			output, err := executeTool(ToolRequest{
+				Tool: decision.Tool,
+				Path: decision.Path,
+				Cmd:  decision.Command,
+			})
+
+			if err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+
+			toolOutput = output
+			toolUsed = true
+
+		} else {
+
+			// =====================================================
+			// 3. PLANNER (LLM FALLBACK)
+			// =====================================================
+			plan, err := agent.PlanTool(chatReq.Prompt)
+
+			if err == nil && plan != nil && plan.UseTool && plan.Tool != "" {
+
+				log.Println("🤖 PLANNER TOOL:", plan.Tool)
+
+				output, err := executeTool(ToolRequest{
+					Tool: plan.Tool,
+					Path: plan.Path,
+					Cmd:  plan.Command,
+				})
+
+				if err != nil {
+					http.Error(w, err.Error(), 500)
+					return
+				}
+
+				toolOutput = output
+				toolUsed = true
+			}
+		}
 	}
 
-	// =========================
-	// Planner
-	// =========================
+	// =====================================================
+	// 4. TOOL-AWARE LLM RESPONSE
+	// =====================================================
+	if toolUsed {
 
-	plan, err := agent.PlanTool(chatReq.Prompt)
-
-	if err != nil {
-		log.Println("Planner error:", err)
-	} else if plan != nil && plan.UseTool && plan.Tool != "" {
-
-		log.Printf("🤖 Planner selected tool: %+v\n", plan)
-
-		// =========================
-		// TOOL EXECUTION
-		// =========================
-
-		toolOutput, err := executeTool(ToolRequest{
-			Tool: plan.Tool,
-			Path: plan.Path,
-			Cmd:  plan.Command,
-		})
-
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-
-		// =========================
-		// SECOND LLM CALL (AGENT STEP)
-		// =========================
-
-		agentPrompt := `
+		finalPrompt := `
 You are a helpful assistant.
 
 User request:
 ` + chatReq.Prompt + `
 
-Tool used:
-` + plan.Tool + `
-
 Tool output:
 ` + toolOutput + `
 
-Now provide a clear, helpful answer to the user.
+Now answer the user clearly and concisely.
 `
 
 		ollamaReq := OllamaRequest{
 			Model:  "qwen2.5:3b",
-			Prompt: agentPrompt,
+			Prompt: finalPrompt,
 			Stream: false,
 		}
 
@@ -151,7 +174,6 @@ Now provide a clear, helpful answer to the user.
 			responseText = r
 		}
 
-		// Save assistant response
 		saveMessage("assistant", responseText)
 
 		json.NewEncoder(w).Encode(map[string]string{
@@ -160,12 +182,17 @@ Now provide a clear, helpful answer to the user.
 		return
 	}
 
-	// =========================
-	// MEMORY LAYER
-	// =========================
-	saveMessage("user", chatReq.Prompt)
+	// =====================================================
+	// 5. NORMAL CHAT
+	// =====================================================
+	isToolTask := strings.TrimSpace(chatReq.Tool.Tool) != "" || strings.Contains(chatReq.Prompt, "read") || strings.Contains(chatReq.Prompt, "summarize")
 
-	messages := getLastMessages(10)
+	var messages []memory.Message
+
+	if !isToolTask {
+		saveMessage("user", chatReq.Prompt)
+		messages = getLastMessages(10)
+	}
 
 	context := ""
 	for _, m := range messages {
@@ -214,7 +241,7 @@ func executeTool(t ToolRequest) (string, error) {
 
 	tool, exists := tools.Registry[t.Tool]
 	if !exists {
-		return "unknown tool", nil
+		return "", errors.New("unknown tool: " + t.Tool)
 	}
 
 	result := tool.Execute(tools.ExecuteParams{

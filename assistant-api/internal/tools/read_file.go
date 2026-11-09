@@ -1,12 +1,9 @@
 package tools
 
 import (
+	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 )
-
-const WorkspaceRoot = "/workspace"
 
 type ReadFileTool struct{}
 
@@ -19,14 +16,32 @@ func (t ReadFileTool) Name() string {
 }
 
 func (t ReadFileTool) Execute(params ExecuteParams) ExecuteResult {
-
-	cleanPath := filepath.Clean(params.Path)
-
-	fullPath := filepath.Join(WorkspaceRoot, cleanPath)
-
-	if !strings.HasPrefix(fullPath, WorkspaceRoot) {
+	fullPath, err := resolveWorkspacePath(params.Path)
+	if err != nil {
 		return ExecuteResult{
-			Error: "invalid path",
+			Error: err.Error(),
+		}
+	}
+
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return ExecuteResult{
+			Error: err.Error(),
+		}
+	}
+
+	if !info.Mode().IsRegular() {
+		return ExecuteResult{
+			Error: "path is not a regular file",
+		}
+	}
+
+	// Avoid unexpectedly loading very large files into memory.
+	const maxFileSize = 2 * 1024 * 1024
+
+	if info.Size() > maxFileSize {
+		return ExecuteResult{
+			Error: fmt.Sprintf("file exceeds maximum allowed size of %d bytes", maxFileSize),
 		}
 	}
 

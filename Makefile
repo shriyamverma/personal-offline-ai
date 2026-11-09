@@ -33,12 +33,12 @@ chat:
 tool:
 	curl -X POST http://localhost:8000/chat \
 	-H "Content-Type: application/json" \
-	-d '{"prompt":"read file","tool":{"tool":"read_file","path":"assistant-api/go.mod"}}'
+	-d '{"prompt":"ignore","tool":{"tool":"read_file","path":"assistant-api/main.go"}}'
 
 agent:
 	curl -X POST http://localhost:8000/chat \
     -H "Content-Type: application/json" \
-    -d '{"prompt":"Summarize assistant-api/go.mod"}'
+    -d '{"prompt":"Read assistant-api/go.mod"}'
 
 # it is NOT real shell execution tool, just container access
 shell:

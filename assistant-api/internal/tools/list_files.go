@@ -2,7 +2,6 @@ package tools
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -17,12 +16,23 @@ func (t ListFilesTool) Name() string {
 }
 
 func (t ListFilesTool) Execute(params ExecuteParams) ExecuteResult {
-
-	fullPath := filepath.Join(WorkspaceRoot, params.Path)
-
-	if !strings.HasPrefix(fullPath, WorkspaceRoot) {
+	fullPath, err := resolveWorkspacePath(params.Path)
+	if err != nil {
 		return ExecuteResult{
-			Error: "invalid path",
+			Error: err.Error(),
+		}
+	}
+
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return ExecuteResult{
+			Error: err.Error(),
+		}
+	}
+
+	if !info.IsDir() {
+		return ExecuteResult{
+			Error: "path is not a directory",
 		}
 	}
 
@@ -36,7 +46,13 @@ func (t ListFilesTool) Execute(params ExecuteParams) ExecuteResult {
 	var result strings.Builder
 
 	for _, entry := range entries {
-		result.WriteString(entry.Name())
+		name := entry.Name()
+
+		if entry.IsDir() {
+			name += "/"
+		}
+
+		result.WriteString(name)
 		result.WriteString("\n")
 	}
 

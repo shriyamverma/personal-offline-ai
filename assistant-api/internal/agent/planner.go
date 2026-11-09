@@ -3,11 +3,11 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const ollamaURL = "http://ollama:11434/api/generate"
@@ -25,52 +25,54 @@ type ollamaRequest struct {
 	Stream bool   `json:"stream"`
 }
 
+type ollamaResponse struct {
+	Response string `json:"response"`
+}
+
+var plannerHTTPClient = &http.Client{
+	Timeout: 60 * time.Second,
+}
+
 func PlanTool(userPrompt string) (*Plan, error) {
-
 	plannerPrompt := `
-You are a STRICT tool router for a coding assistant.
+You are a tool planner for a coding assistant.
 
-YOU MUST follow these rules:
+Available tools:
 
-RULE 1:
-If the user mentions ANY file, code, path, or repository content,
-YOU MUST use the read_file tool.
+1. read_file
+   Purpose: Read the contents of a file.
+   Required parameter: path
 
-RULE 2:
-If the user asks to summarize, explain, debug, or analyze code,
-YOU MUST use read_file.
+2. list_files
+   Purpose: List the contents of a directory.
+   Required parameter: path
 
-RULE 3:
-NEVER answer from memory.
+Rules:
 
-RULE 4:
-If unsure, default to use_tool = true with read_file.
+- If the user asks to read, inspect, summarize, explain, debug,
+  or analyze a specific file, use read_file.
+- If the user asks to list or show files or directories,
+  use list_files.
+- For general programming questions that do not require
+  inspecting repository files, do not use a tool.
+- Never invent a file path.
+- Use the path mentioned by the user.
+- If the user asks about a file but does not provide a path,
+  use an empty path only if you cannot determine one.
+- Do not use tools for ordinary conversations.
 
-TOOLS:
+Return STRICT JSON ONLY.
 
-read_file:
-- reads a file
-- requires "path"
+Tool request example:
+{"use_tool":true,"tool":"read_file","path":"assistant-api/main.go"}
 
-list_files:
-- lists directory
-- requires "path"
+Directory listing example:
+{"use_tool":true,"tool":"list_files","path":"assistant-api/internal"}
 
-OUTPUT FORMAT (STRICT JSON ONLY):
+No tool example:
+{"use_tool":false,"tool":"","path":""}
 
-If tool needed:
-{
-  "use_tool": true,
-  "tool": "read_file",
-  "path": "assistant-api/main.go"
-}
-
-If no tool needed:
-{
-  "use_tool": false
-}
-
-USER REQUEST:
+User request:
 ` + userPrompt
 
 	req := ollamaRequest{
@@ -79,43 +81,83 @@ USER REQUEST:
 		Stream: false,
 	}
 
-	body, _ := json.Marshal(req)
-
-	resp, err := http.Post(
-		ollamaURL,
-		"application/json",
-		bytes.NewBuffer(body),
-	)
-
+	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to encode planner request: %w", err)
 	}
 
+	httpReq, err := http.NewRequest(
+		http.MethodPost,
+		ollamaURL,
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create planner request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := plannerHTTPClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("planner request failed: %w", err)
+	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
-
-	var raw struct {
-		Response string `json:"response"`
+	if resp.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf(
+			"ollama planner returned status %d: %s",
+			resp.StatusCode,
+			string(responseBody),
+		)
 	}
 
-	json.Unmarshal(respBody, &raw)
-	log.Println("🧠 Planner raw response:")
-	log.Println(raw.Response)
+	var raw ollamaResponse
 
-	response := strings.TrimSpace(raw.Response)
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("failed to decode planner response: %w", err)
+	}
+
+	response := cleanJSONResponse(raw.Response)
+
+	var plan Plan
+
+	if err := json.Unmarshal([]byte(response), &plan); err != nil {
+		return nil, fmt.Errorf("planner returned invalid JSON: %w", err)
+	}
+
+	if !plan.UseTool {
+		return &plan, nil
+	}
+
+	switch plan.Tool {
+	case "read_file", "list_files":
+	default:
+		return nil, fmt.Errorf("planner selected unsupported tool: %s", plan.Tool)
+	}
+
+	if strings.TrimSpace(plan.Path) == "" {
+		return nil, fmt.Errorf("planner did not provide a path")
+	}
+
+	return &plan, nil
+}
+
+func cleanJSONResponse(response string) string {
+	response = strings.TrimSpace(response)
 
 	response = strings.TrimPrefix(response, "```json")
 	response = strings.TrimPrefix(response, "```")
 	response = strings.TrimSuffix(response, "```")
 	response = strings.TrimSpace(response)
 
-	var plan Plan
+	// Handle cases where the model adds text around the JSON.
+	start := strings.Index(response, "{")
+	end := strings.LastIndex(response, "}")
 
-	err = json.Unmarshal([]byte(response), &plan)
-	if err != nil {
-		return nil, errors.New("planner returned invalid JSON")
+	if start >= 0 && end > start {
+		response = response[start : end+1]
 	}
 
-	return &plan, nil
+	return strings.TrimSpace(response)
 }

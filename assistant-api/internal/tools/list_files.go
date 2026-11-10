@@ -2,45 +2,40 @@ package tools
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 )
 
 type ListFilesTool struct{}
 
-func init() {
-	Register(ListFilesTool{})
-}
-
-func (t ListFilesTool) Name() string {
-	return "list_files"
-}
-
-func (t ListFilesTool) Execute(params ExecuteParams) ExecuteResult {
-
-	fullPath := filepath.Join(WorkspaceRoot, params.Path)
-
-	if !strings.HasPrefix(fullPath, WorkspaceRoot) {
-		return ExecuteResult{
-			Error: "invalid path",
-		}
-	}
-
-	entries, err := os.ReadDir(fullPath)
+func init()                        { Register(ListFilesTool{}) }
+func (ListFilesTool) Name() string { return "list_files" }
+func (ListFilesTool) Execute(p ExecuteParams) ExecuteResult {
+	path, err := resolveWorkspacePath(p.Path)
 	if err != nil {
-		return ExecuteResult{
-			Error: err.Error(),
+		return ExecuteResult{Error: err.Error()}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return ExecuteResult{Error: err.Error()}
+	}
+	if !info.IsDir() {
+		return ExecuteResult{Error: "path is not a directory"}
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return ExecuteResult{Error: err.Error()}
+	}
+	var b strings.Builder
+	for i, e := range entries {
+		if i >= 500 {
+			b.WriteString("... output truncated at 500 entries\n")
+			break
 		}
+		name := e.Name()
+		if e.IsDir() {
+			name += "/"
+		}
+		b.WriteString(name + "\n")
 	}
-
-	var result strings.Builder
-
-	for _, entry := range entries {
-		result.WriteString(entry.Name())
-		result.WriteString("\n")
-	}
-
-	return ExecuteResult{
-		Output: result.String(),
-	}
+	return ExecuteResult{Output: b.String()}
 }

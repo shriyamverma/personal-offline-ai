@@ -1,45 +1,29 @@
-.PHONY: up down rebuild logs ps clean chat shell
-
+.PHONY: up down rebuild logs ps clean chat tool agent shell build test dev
 build:
 	docker compose build assistant-api
-
 up:
 	docker compose up
 
 dev:
 	docker compose up -d --build assistant-api
-
 down:
 	docker compose down
-
 rebuild:
 	docker compose down
-	docker compose up --build -d
-
+	docker compose up -d --build
 logs:
 	docker compose logs -f
-
 ps:
 	docker compose ps
-
 clean:
 	docker compose down -v
-
 chat:
-	curl -X POST http://localhost:8000/chat \
-	-H "Content-Type: application/json" \
-	-d '{"prompt":"What is docker"}'
-
+	curl -sS -X POST http://localhost:8000/chat -H "Content-Type: application/json" -d '{"prompt":"What is docker"}'
 tool:
-	curl -X POST http://localhost:8000/chat \
-	-H "Content-Type: application/json" \
-	-d '{"prompt":"read file","tool":{"tool":"read_file","path":"assistant-api/go.mod"}}'
-
+	curl -sS -X POST http://localhost:8000/chat -H "Content-Type: application/json" -d '{"prompt":"ignore","tool":{"tool":"read_file","path":"assistant-api/main.go"}}'
 agent:
-	curl -X POST http://localhost:8000/chat \
-    -H "Content-Type: application/json" \
-    -d '{"prompt":"Summarize assistant-api/go.mod"}'
-
-# it is NOT real shell execution tool, just container access
+	curl -sS -X POST http://localhost:8000/chat -H "Content-Type: application/json" -d '{"prompt":"Inspect assistant-api and summarize the main components"}'
+test:
+	cd assistant-api && go test ./...
 shell:
 	docker exec -it assistant-api sh

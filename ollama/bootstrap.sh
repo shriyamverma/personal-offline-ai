@@ -1,48 +1,14 @@
 #!/bin/sh
-
-set -e
-
-MODEL="qwen2.5:3b"
+set -eu
 API="http://ollama:11434"
-
-echo "⏳ Waiting for Ollama..."
-
-# wait for API
-until wget -qO- $API/api/tags >/dev/null 2>&1; do
-  echo "   waiting for ollama..."
-  sleep 2
+MODELS="qwen2.5:3b nomic-embed-text"
+echo "Waiting for Ollama..."
+until wget -qO- "$API/api/tags" >/dev/null 2>&1; do sleep 2; done
+for MODEL in $MODELS; do
+  if wget -qO- "$API/api/tags" | grep -q "$MODEL"; then echo "Model already present: $MODEL"; continue; fi
+  echo "Pulling $MODEL (this may take a while)..."
+  wget -qO- --header="Content-Type: application/json" --post-data="{\"name\":\"$MODEL\"}" "$API/api/pull" >/dev/null
+  until wget -qO- "$API/api/tags" | grep -q "$MODEL"; do sleep 5; done
+  echo "Model available: $MODEL"
 done
-
-echo "✅ Ollama is ready"
-
-# check model
-MODEL_EXISTS=$(wget -qO- $API/api/tags | grep -q "$MODEL" && echo "yes" || echo "no")
-
-if [ "$MODEL_EXISTS" = "yes" ]; then
-  echo "✅ Model already present: $MODEL"
-  exit 0
-fi
-
-echo "📦 Model missing: $MODEL"
-echo "⬇️ Starting pull..."
-
-# trigger pull
-wget -qO- \
-  --header="Content-Type: application/json" \
-  --post-data="{\"name\":\"$MODEL\"}" \
-  $API/api/pull >/dev/null 2>&1 &
-
-# NOTE: pull runs async, so we poll readiness
-while true; do
-  STATUS=$(wget -qO- $API/api/tags | grep "$MODEL" || true)
-
-  if [ -n "$STATUS" ]; then
-    echo "✅ Model is now available"
-    break
-  fi
-
-  echo "⏳ downloading model..."
-  sleep 5
-done
-
-echo "🚀 Bootstrap complete"
+echo "Ollama bootstrap complete"

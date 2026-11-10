@@ -4,75 +4,58 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const WorkspaceRoot = "/workspace"
 
 func resolveWorkspacePath(path string) (string, error) {
-	if path == "" {
+	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("path is required")
 	}
-
-	root, err := filepath.Abs(WorkspaceRoot)
+	root, err := filepath.EvalSymlinks(WorkspaceRoot)
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve workspace: %w", err)
+		return "", fmt.Errorf("workspace unavailable: %w", err)
 	}
-
-	root, err = filepath.EvalSymlinks(root)
+	root, err = filepath.Abs(root)
 	if err != nil {
-		return "", fmt.Errorf("failed to access workspace: %w", err)
-	}
-
-	var fullPath string
-
-	if filepath.IsAbs(path) {
-		fullPath = filepath.Clean(path)
-	} else {
-		fullPath = filepath.Join(root, filepath.Clean(path))
-	}
-
-	fullPath, err = filepath.Abs(fullPath)
-	if err != nil {
-		return "", fmt.Errorf("invalid path: %w", err)
-	}
-
-	// Check the lexical path before resolving symlinks.
-	if err := ensureInsideWorkspace(root, fullPath); err != nil {
 		return "", err
 	}
-
-	// Resolve symlinks to prevent escaping the workspace.
-	resolvedPath, err := filepath.EvalSymlinks(fullPath)
+	candidate := path
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(root, candidate)
+	}
+	candidate, err = filepath.Abs(filepath.Clean(candidate))
+	if err != nil {
+		return "", err
+	}
+	if err = ensureInsideWorkspace(root, candidate); err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(candidate)
 	if err != nil {
 		return "", fmt.Errorf("unable to access path: %w", err)
 	}
-
-	if err := ensureInsideWorkspace(root, resolvedPath); err != nil {
-		return "", fmt.Errorf("path outside workspace is not allowed")
+	if err = ensureInsideWorkspace(root, resolved); err != nil {
+		return "", err
 	}
-
-	info, err := os.Stat(resolvedPath)
+	info, err := os.Stat(resolved)
 	if err != nil {
 		return "", err
 	}
-
-	if !info.Mode().IsRegular() && !info.IsDir() {
+	if !info.IsDir() && !info.Mode().IsRegular() {
 		return "", fmt.Errorf("unsupported file type")
 	}
-
-	return resolvedPath, nil
+	return resolved, nil
 }
 
 func ensureInsideWorkspace(root, target string) error {
 	rel, err := filepath.Rel(root, target)
 	if err != nil {
-		return fmt.Errorf("invalid path: %w", err)
+		return err
 	}
-
-	if rel == ".." || filepath.IsAbs(rel) ||
-		(len(rel) > 3 && rel[:3] == ".."+string(filepath.Separator)) {
+	if rel == ".." || rel == "."+string(filepath.Separator)+".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return fmt.Errorf("path outside workspace is not allowed")
 	}
-
 	return nil
 }

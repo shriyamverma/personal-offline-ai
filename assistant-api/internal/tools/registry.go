@@ -1,37 +1,42 @@
 package tools
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+	"sync"
+)
 
-var Registry = map[string]Tool{}
+var (
+	registryMu sync.RWMutex
+	Registry   = map[string]Tool{}
+)
 
 func Register(tool Tool) {
-	if tool == nil {
-		panic("cannot register a nil tool")
+	if tool == nil || tool.Name() == "" {
+		panic("cannot register nil tool or empty tool name")
 	}
-
-	name := tool.Name()
-	if name == "" {
-		panic("cannot register a tool with an empty name")
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	if _, exists := Registry[tool.Name()]; exists {
+		panic(fmt.Sprintf("tool already registered: %s", tool.Name()))
 	}
-
-	if _, exists := Registry[name]; exists {
-		panic(fmt.Sprintf("tool already registered: %s", name))
-	}
-
-	Registry[name] = tool
+	Registry[tool.Name()] = tool
 }
 
 func Get(name string) (Tool, bool) {
-	tool, exists := Registry[name]
-	return tool, exists
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	t, ok := Registry[name]
+	return t, ok
 }
 
 func List() []string {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	names := make([]string, 0, len(Registry))
-
 	for name := range Registry {
 		names = append(names, name)
 	}
-
+	sort.Strings(names)
 	return names
 }

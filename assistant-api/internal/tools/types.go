@@ -1,8 +1,10 @@
 package tools
 
 type ExecuteParams struct {
-	Path    string
-	Command string
+	Path     string
+	Command  string
+	Content  string
+	Approved bool
 }
 
 type ExecuteResult struct {

@@ -7,12 +7,15 @@ type GitDiffTool struct{}
 
 func init()                        { Register(GitStatusTool{}); Register(GitDiffTool{}) }
 func (GitStatusTool) Name() string { return "git_status" }
-func (GitStatusTool) Execute(ExecuteParams) ExecuteResult {
-	return runGit("status", "--short", "--branch")
+func (GitStatusTool) Execute(p ExecuteParams) ExecuteResult {
+	return runGit(p, "status", "--short", "--branch")
 }
-func (GitDiffTool) Name() string                        { return "git_diff" }
-func (GitDiffTool) Execute(ExecuteParams) ExecuteResult { return runGit("diff", "--no-ext-diff", "--") }
-func runGit(args ...string) ExecuteResult {
-	p := ExecuteParams{Command: "git " + strings.Join(args, " "), Approved: true}
+func (GitDiffTool) Name() string { return "git_diff" }
+func (GitDiffTool) Execute(p ExecuteParams) ExecuteResult {
+	return runGit(p, "diff", "--no-ext-diff", "--")
+}
+func runGit(p ExecuteParams, args ...string) ExecuteResult {
+	p.Command = "git " + strings.Join(args, " ")
+	p.Approved = true
 	return (ShellTool{}).Execute(p)
 }

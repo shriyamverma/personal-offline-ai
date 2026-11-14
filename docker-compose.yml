@@ -15,6 +15,7 @@ services:
       - ./ollama/bootstrap.sh:/bootstrap.sh
     entrypoint: ["/bin/sh", "/bootstrap.sh"]
   open-webui:
+    profiles: [legacy-ui]
     image: ghcr.io/open-webui/open-webui:v0.9.6
     container_name: open-webui
     depends_on:
@@ -38,8 +39,21 @@ services:
       ollama-init:
         condition: service_completed_successfully
     restart: unless-stopped
+    environment:
+      - DATABASE_PATH=/data/assistant.db
     volumes:
+      - assistant_data:/data
       - ./:/workspace
+  frontend:
+    build:
+      context: ./frontend
+    container_name: assistant-frontend
+    ports:
+      - "127.0.0.1:3000:80"
+    depends_on:
+      - assistant-api
+    restart: unless-stopped
 volumes:
+  assistant_data:
   ollama_data:
   open_webui_data:

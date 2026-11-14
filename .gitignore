@@ -1,2 +1,11 @@
 .idea
 .DS_Store
+node_modules/
+dist/
+*.tsbuildinfo
+*.db
+*.db-shm
+*.db-wal
+.sites-runtime/
+test-results/
+playwright-report/

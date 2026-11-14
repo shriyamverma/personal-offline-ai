@@ -9,3 +9,4 @@ dist/
 .sites-runtime/
 test-results/
 playwright-report/
+/docs/

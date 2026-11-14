@@ -497,3 +497,5 @@ Vite serves [http://127.0.0.1:5173](http://127.0.0.1:5173) and proxies to the AP
 Backend regression tests also cover conversation isolation, legacy database migration, approval replay protection, and preserving pending approvals after a disconnect. Run `go test -race ./...` and `go vet ./...` from `assistant-api/` to validate the backend.
 
 ---
+
+![Repository Views](https://view-counter-worker.shriyamverma.workers.dev/github?repo=shriyamverma%2Fpersonal-offline-ai)

@@ -2,7 +2,7 @@
 
 A self-hosted, lightweight personal AI assistant designed to run entirely on local systems with a strong focus on privacy, offline capability, and developer extensibility.
 
-<video controls src="demo.mov" title="**Custom Frontend & Interactive Agent Experience"></video>
+https://github.com/user-attachments/assets/409dae6a-b604-4c3b-bd45-25cb338ae749
 
 This project is focused on learning and building real-world AI assistant infrastructure from scratch, including:
 
@@ -463,7 +463,15 @@ Use `approved:false` to reject. Each subsequent privileged operation needs a sep
 
 SQLite now lives at `/data/assistant.db` in the `assistant_data` Docker volume. Existing messages and summaries migrate into an **Imported history** conversation when the earlier database is supplied.
 
-**Before recreating a Phase 5 API container, preserve its `/app/assistant.db` and any WAL/SHM companions.** Follow the [existing database migration procedure](docs/phase6.md#existing-database-migration). `docker compose down` retains the named volume; `make clean` removes it.
+**Before recreating a Phase 5 API container, preserve its `/app/assistant.db` and any WAL/SHM companions.** To migrate an existing container named `assistant-api`:
+
+1. Stop the old container: `docker stop assistant-api`.
+2. Back up its application directory to a location outside the repository: `mkdir -p ../personal-offline-ai-backup`, then `docker cp assistant-api:/app/. ../personal-offline-ai-backup/`. Keep this backup until the imported history is verified.
+3. Build the new API image with `docker compose build assistant-api`, then create its container and data volume without starting it: `docker compose create --no-deps assistant-api`.
+4. Copy the database into the new location: `docker cp ../personal-offline-ai-backup/assistant.db assistant-api:/data/assistant.db`. If the backup contains `assistant.db-wal` or `assistant.db-shm`, copy each into `/data/` as well.
+5. Start the stack with `docker compose up -d` and verify the **Imported history** conversation.
+
+`docker compose down` retains the named volume; `make clean` removes it.
 
 Pending approvals survive browser reloads and backend restarts. Formerly running requests become interrupted after a restart and are not automatically replayed. Stopping a response retains completed tool side effects.
 
@@ -486,6 +494,6 @@ Vite serves [http://127.0.0.1:5173](http://127.0.0.1:5173) and proxies to the AP
 | `make frontend-test`                    | Run SSE parser tests                                |
 | `npm run test:e2e` (inside `frontend/`) | Run browser regression flows using installed Chrome |
 
-Backend regression tests also cover conversation isolation, legacy database migration, approval replay protection, and preserving pending approvals after a disconnect. See the [Phase 6 implementation and API guide](docs/phase6.md) for full contracts, migration steps, and validation commands.
+Backend regression tests also cover conversation isolation, legacy database migration, approval replay protection, and preserving pending approvals after a disconnect. Run `go test -race ./...` and `go vet ./...` from `assistant-api/` to validate the backend.
 
 ---

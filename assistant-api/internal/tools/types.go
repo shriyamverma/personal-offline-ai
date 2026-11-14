@@ -1,6 +1,9 @@
 package tools
 
+import "context"
+
 type ExecuteParams struct {
+	Context  context.Context
 	Path     string
 	Command  string
 	Content  string

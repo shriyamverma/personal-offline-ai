@@ -2,16 +2,23 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
 
-const ollamaURL = "http://ollama:11434/api/generate"
-const modelName = "qwen2.5:3b"
+func ollamaEndpoint() string {
+	base := os.Getenv("OLLAMA_URL")
+	if base == "" {
+		base = "http://ollama:11434"
+	}
+	return strings.TrimRight(base, "/") + "/api/generate"
+}
 
 type Plan struct {
 	UseTool bool   `json:"use_tool"`
@@ -21,38 +28,63 @@ type Plan struct {
 	Content string `json:"content,omitempty"`
 }
 type ollamaRequest struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
-	Stream bool   `json:"stream"`
-	Format string `json:"format,omitempty"`
+	Model   string          `json:"model"`
+	Prompt  string          `json:"prompt"`
+	Stream  bool            `json:"stream"`
+	Format  json.RawMessage `json:"format,omitempty"`
+	Options map[string]any  `json:"options,omitempty"`
 }
 type ollamaResponse struct {
 	Response string `json:"response"`
 }
 
+// Constrain types at generation time rather than relying on JSON mode alone.
+var planSchema = json.RawMessage(`{
+ "type":"object",
+ "properties":{
+  "use_tool":{"type":"boolean"},
+  "tool":{"type":"string","enum":["","read_file","list_files","search_files","git_status","git_diff","shell","write_file"]},
+  "path":{"type":"string"},"command":{"type":"string"},"content":{"type":"string"}
+ },
+ "required":["use_tool","tool"],"additionalProperties":false
+}`)
+
 var plannerHTTPClient = &http.Client{Timeout: 60 * time.Second}
 
 // PlanNext asks the model for one action. Repeated calls form the observe-plan-execute loop.
-func PlanNext(userPrompt string, observations []string, step int) (*Plan, error) {
+func PlanNext(ctx context.Context, model, userPrompt string, observations []string, step int) (*Plan, error) {
 	var history strings.Builder
 	for i, v := range observations {
 		fmt.Fprintf(&history, "Observation %d:\n%s\n", i+1, v)
 	}
-	prompt := `You are a local coding assistant agent. Choose at most ONE next tool action.
+	prompt := `You select tools for a private personal assistant. Most ordinary conversation needs no tools. Choose at most ONE next tool action.
 Available tools:
 - read_file(path): read a workspace file
 - list_files(path): list a workspace directory
 - search_files(path, command): find literal text in files under path; command is search text
 - git_status(): inspect git status
 - git_diff(): inspect git diff
-- shell(command): only safe allowlisted commands such as "go test ./assistant-api/..." or "git log -5"
+- shell(command): only safe allowlisted commands such as "go test ./..." or "git log -5"
 - write_file(path, content): create a NEW file only; never overwrite
 
-Rules: Use a tool only when it materially helps. Never invent paths. Do not use shell for arbitrary commands. Never request write_file or shell unless the user explicitly asked for that operation; those tools still require approval. After observations, either choose the next useful action or set use_tool=false and provide no tool. Max planned actions is 4. Return JSON only with keys use_tool, tool, path, command, content.
+Rules:
+- Remembering a fact or phrase, recalling conversation history, greetings, and general explanations require NO workspace tools. Messages are already saved in conversation memory. Never search files for a phrase the user asks you to remember.
+- Use a tool only for an explicit workspace, file, repository, or command task.
+- If the observations already satisfy the request, set use_tool=false. Do not repeat a completed command or add unrelated tools.
+- use_tool must be the JSON boolean true or false, never a quoted string. When false, set tool="".
+Use a tool only when it materially helps. Never invent paths. Do not use shell for arbitrary commands. Never request write_file or shell unless the user explicitly asked for that operation; those tools still require approval. After observations, either choose the next useful action or set use_tool=false and provide no tool. Max planned actions is 4. Return JSON only with keys use_tool, tool, path, command, content.
 
-User request:\n` + userPrompt + `\n\nPrevious tool observations:\n` + history.String() + fmt.Sprintf("\nThis is planning step %d of 4.", step)
-	body, _ := json.Marshal(ollamaRequest{Model: modelName, Prompt: prompt, Stream: false, Format: "json"})
-	req, err := http.NewRequest(http.MethodPost, ollamaURL, bytes.NewReader(body))
+User request:
+` + userPrompt + `
+
+Previous tool observations:
+` + history.String() + fmt.Sprintf("\nThis is planning step %d of 4.", step)
+	prompt += "\nOutput JSON schema:\n" + string(planSchema)
+	body, err := json.Marshal(ollamaRequest{Model: model, Prompt: prompt, Stream: false, Format: planSchema, Options: map[string]any{"temperature": 0}})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ollamaEndpoint(), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -71,6 +103,15 @@ User request:\n` + userPrompt + `\n\nPrevious tool observations:\n` + history.St
 		return nil, err
 	}
 	clean := cleanJSON(raw.Response)
+	var envelope struct {
+		UseTool *bool `json:"use_tool"`
+	}
+	if err = json.Unmarshal([]byte(clean), &envelope); err != nil {
+		return nil, fmt.Errorf("invalid planner JSON: %w", err)
+	}
+	if envelope.UseTool == nil {
+		return nil, fmt.Errorf("planner response missing boolean use_tool")
+	}
 	var plan Plan
 	if err = json.Unmarshal([]byte(clean), &plan); err != nil {
 		return nil, fmt.Errorf("invalid planner JSON: %w (%s)", err, clean)
@@ -84,7 +125,9 @@ User request:\n` + userPrompt + `\n\nPrevious tool observations:\n` + history.St
 	}
 	return &plan, nil
 }
-func PlanTool(prompt string) (*Plan, error) { return PlanNext(prompt, nil, 1) }
+func PlanTool(prompt string) (*Plan, error) {
+	return PlanNext(context.Background(), "qwen2.5:3b", prompt, nil, 1)
+}
 func cleanJSON(s string) string {
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "```json")

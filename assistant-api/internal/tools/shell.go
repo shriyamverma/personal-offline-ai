@@ -23,7 +23,11 @@ func (ShellTool) Execute(p ExecuteParams) ExecuteResult {
 	if !isAllowedCommand(args) {
 		return ExecuteResult{Error: "command and arguments are not allowlisted"}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	parent := p.Context
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Dir = WorkspaceRoot

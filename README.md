@@ -181,8 +181,6 @@ npm run test:e2e
 
 For a manual check, send a message, refresh to verify history, switch models, rename a conversation, and change appearance settings. Save a phrase such as `Remember this test phrase: copper mango lighthouse.`, then ask for it in the same conversation. Open a separate conversation to check that the phrase is not retrieved from the first chat.
 
-The GitHub Actions workflow in `.github/workflows/ci.yml` defines backend checks, frontend and browser tests, and Docker builds for pull requests, pushes to `personal-cloud-ai`, and manual runs. It does not publish images or deploy the application.
-
 ## Project Structure
 
 ```text
@@ -199,5 +197,4 @@ frontend/
   e2e/                     Browser regression tests
 docker-compose.yml         Frontend, API, and persistent SQLite volume
 .env.example               Backend configuration template
-.github/workflows/ci.yml    Automated checks and image builds
 ```

@@ -12,7 +12,7 @@ import {
   Code2,
   Copy,
   FileText,
-  GitBranch,
+  ListTodo,
   HardDrive,
   Loader2,
   Menu,
@@ -25,7 +25,6 @@ import {
   ShieldCheck,
   Square,
   Sun,
-  Terminal,
   Trash2,
   X,
 } from "lucide-react";
@@ -38,6 +37,7 @@ import { getPalette } from "./lib/themes";
 import { useTheme } from "./lib/use-theme";
 import {
   api,
+  ApiError,
   stream,
   type Conversation,
   type Detail,
@@ -52,15 +52,6 @@ function stored<T>(key: string, fallback: T): T {
   } catch {
     return fallback;
   }
-}
-function Icon({ tool }: { tool?: string }) {
-  return tool === "shell" ? (
-    <Terminal size={15} />
-  ) : tool?.startsWith("git") ? (
-    <GitBranch size={15} />
-  ) : (
-    <FileText size={15} />
-  );
 }
 function Code({ children, className, ...props }: React.ComponentProps<"code">) {
   const [copied, setCopied] = useState(false);
@@ -161,64 +152,13 @@ function Modal({
     </dialog>
   );
 }
-function Timeline({ run }: { run: Run }) {
-  const events = run.state.events || [];
-  const starts = events.filter((event) => event.type === "tool_start");
+function ResponseStatus({ run }: { run: Run }) {
+  const memoryWarning = (run.state.events || []).find(event => event.type === "memory_warning");
   return (
-    <div className="timeline" aria-label="Tool activity">
-      {starts.map((event, index) => {
-        const result = events.find(
-          (item) =>
-            ["tool_result", "tool_error"].includes(item.type) &&
-            item.step === event.step,
-        );
-        return (
-          <details key={`${event.step}-${index}`}>
-            <summary>
-              <span className="tool-icon">
-                <Icon tool={event.tool} />
-              </span>
-              <span>
-                {event.tool}
-                <small>{event.action?.path || event.action?.command}</small>
-              </span>
-              <span className="tool-status">
-                {result?.type === "tool_error"
-                  ? "Failed"
-                  : result
-                    ? "Complete"
-                    : run.status === "running"
-                      ? "Running"
-                      : "Interrupted"}
-              </span>
-              <ChevronDown size={13} />
-            </summary>
-            {result ? (
-              <pre>
-                {result.output}
-                {result.error && "\n" + result.error}
-              </pre>
-            ) : (
-              <p className="muted">
-                {run.status === "running"
-                  ? "Waiting for tool output…"
-                  : "No result was saved."}
-              </p>
-            )}
-          </details>
-        );
-      })}
-      {run.status === "running" && starts.length === 0 && (
-        <div className="thinking">
-          <Loader2 size={14} className="spin" /> Planning a response…
-        </div>
-      )}
-      {["failed", "interrupted"].includes(run.status) && (
-        <p className="run-error">
-          {run.state.error ||
-            "This request was interrupted. You can send a new message."}
-        </p>
-      )}
+    <div className="response-status" aria-label="Response status">
+      {memoryWarning && <p className="muted" role="status">{memoryWarning.error}</p>}
+      {run.status === "running" && <div className="thinking"><Loader2 size={14} className="spin" /> Preparing a response…</div>}
+      {["failed", "interrupted"].includes(run.status) && <p className="run-error">{run.state.error || "This request was interrupted. You can send a new message."}</p>}
     </div>
   );
 }
@@ -269,8 +209,13 @@ export default function App() {
   }
   async function refreshModels() {
     try {
-      const result = await api<{ models: string[] }>("/models");
+      const result = await api<{ models: string[]; default?: string }>("/models");
       setModels(result.models);
+      if (result.models.length) {
+        setPreferences(value => result.models.includes(value.model) ? value : {
+          ...value, model: result.default && result.models.includes(result.default) ? result.default : result.models[0],
+        });
+      }
       setModelError("");
     } catch (err) {
       setModelError(err instanceof Error ? err.message : String(err));
@@ -320,7 +265,15 @@ export default function App() {
         if (requestVersion.current === version) setDetail(result);
       })
       .catch((err) => {
-        if (requestVersion.current === version) report(err);
+        if (requestVersion.current !== version) return;
+        if (err instanceof ApiError && err.status === 404) {
+          // A branch switch, database reset, or deletion in another tab can
+          // leave a saved conversation ID that this backend no longer has.
+          activeRef.current = null;
+          setActiveId(null);
+          setDetail(null);
+          setConversations(items => items.filter(item => item.id !== activeId));
+        } else report(err);
       })
       .finally(() => {
         if (requestVersion.current === version) setLoading(false);
@@ -346,9 +299,6 @@ export default function App() {
     }, 2000);
     return () => clearInterval(timer);
   }, [activeId, busy, detail?.runs]);
-  const pending = detail?.runs.find(
-    (run) => run.status === "awaiting_approval",
-  );
   const runningElsewhere =
     detail?.runs.some((run) => run.status === "running") && !busy;
   const selectedModel = detail?.conversation.model || preferences.model;
@@ -390,14 +340,8 @@ export default function App() {
               state: { prompt: "", events: [] },
             };
       run.state.events.push(event);
-      if (event.type === "approval_required") {
-        run.status = "awaiting_approval";
-        run.state.pending = event.action;
-        run.state.approval_id = event.approval_id;
-      }
       if (event.type === "run_start") {
         run.status = "running";
-        run.state.pending = undefined;
         run.state.user_message_id = event.message_id;
       }
       if (event.type === "done") run.status = "completed";
@@ -419,7 +363,7 @@ export default function App() {
       await stream(path, payload, controller.current.signal, receive);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError")
-        setError("Response stopped. Any completed tool actions are retained.");
+        setError("Response stopped. You can send another message.");
       else report(err);
     } finally {
       controller.current = null;
@@ -439,7 +383,7 @@ export default function App() {
   async function send(event?: FormEvent, promptOverride?: string) {
     event?.preventDefault();
     const prompt = (promptOverride || draft).trim();
-    if (!prompt || busy || pending || loading || runningElsewhere) return;
+    if (!prompt || busy || loading || runningElsewhere) return;
     setBusy(true);
     setError("");
     setSidebar(false);
@@ -481,18 +425,8 @@ export default function App() {
       setBusy(false);
     }
   }
-  async function decide(run: Run, approved: boolean) {
-    if (busy || !activeId) return;
-    setBusy(true);
-    setError("");
-    await runRequest(
-      "/approvals/" + run.id,
-      { approved, approval_id: run.state.approval_id, stream: true },
-      activeId,
-    );
-  }
   async function changeModel(model: string) {
-    if (busy || pending || runningElsewhere) return;
+    if (busy || runningElsewhere) return;
     try {
       if (activeId && detail) {
         const c = await api<Conversation>("/conversations/" + activeId, {
@@ -603,7 +537,7 @@ export default function App() {
             <ShieldCheck size={17} />
             <div>
               <strong>Yours, by design</strong>
-              <p>Local models. Local memory.</p>
+              <p>Groq models. Cloud retrieval.</p>
             </div>
           </div>
           <button
@@ -637,7 +571,7 @@ export default function App() {
             <strong>{detail?.conversation.title || "New conversation"}</strong>
           </div>
           <div className="local-badge">
-            <span className="status-dot online" /> Local workspace
+            <span className="status-dot online" /> Cloud chat
           </div>
           <Button
             variant="ghost"
@@ -675,27 +609,15 @@ export default function App() {
                 Shriyam?
               </h1>
               <p>
-                Think it through. Explore your code. Make something new.
+                Think it through. Learn something. Make something new.
                 <br />
-                Your personal assistant, right here on your machine.
+                Your personal assistant, powered by Groq. Chat-only mode.
               </p>
               <div className="suggestions">
                 {[
-                  {
-                    icon: <Code2 size={19} />,
-                    title: "Explore a codebase",
-                    text: "Inspect assistant-api directory and explain its architecture",
-                  },
-                  {
-                    icon: <GitBranch size={19} />,
-                    title: "Review my changes",
-                    text: "Show git diff and explain the changes",
-                  },
-                  {
-                    icon: <FileText size={19} />,
-                    title: "Read a local file",
-                    text: "Read README.md and summarize the project",
-                  },
+                  { icon: <Code2 size={19} />, title: "Explain a concept", text: "Explain how semantic search works with a simple example" },
+                  { icon: <ListTodo size={19} />, title: "Plan a project", text: "Help me break a project idea into achievable milestones" },
+                  { icon: <FileText size={19} />, title: "Draft something", text: "Help me draft a clear project introduction" },
                 ].map((item) => (
                   <button
                     disabled={busy}
@@ -710,8 +632,7 @@ export default function App() {
                 ))}
               </div>
               <div className="welcome-foot">
-                <ShieldCheck size={13} /> Conversations stay in your local
-                database.
+                <ShieldCheck size={13} /> History is saved on your server. Cloud services process requests.
               </div>
             </section>
           )}
@@ -737,7 +658,7 @@ export default function App() {
                       const run = detail.runs.find(
                         (item) => item.state.user_message_id === message.id,
                       );
-                      return run ? <Timeline run={run} /> : null;
+                      return run ? <ResponseStatus run={run} /> : null;
                     })()}
                 </div>
               ))}
@@ -751,58 +672,12 @@ export default function App() {
               )}
               {busy &&
                 !partial &&
-                !pending &&
                 !detail.runs.some((r) => r.status === "running") && (
                   <div className="thinking">
                     <Loader2 className="spin" size={14} /> Connecting to your
-                    local model…
+                    cloud model…
                   </div>
                 )}
-              {pending && (
-                <section className="approval">
-                  <div className="approval-heading">
-                    <ShieldCheck size={20} />
-                    <div>
-                      <h2>Your approval is needed</h2>
-                      <p>Review this exact operation before continuing.</p>
-                    </div>
-                  </div>
-                  <div className="approval-operation">
-                    <strong>{pending.state.pending?.tool}</strong>
-                    <pre>
-                      {pending.state.pending?.path ||
-                        pending.state.pending?.command}
-                    </pre>
-                    {pending.state.pending?.content !== undefined && (
-                      <>
-                        <span className="section-label">NEW FILE CONTENT</span>
-                        <pre>{pending.state.pending.content}</pre>
-                      </>
-                    )}
-                  </div>
-                  <p className="muted">
-                    {pending.state.pending?.tool === "shell"
-                      ? "This command will run in your workspace and may execute project code."
-                      : "This creates a new file. Existing files will not be overwritten."}{" "}
-                    Approval applies to this operation once.
-                  </p>
-                  <div className="approval-actions">
-                    <Button
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() => void decide(pending, false)}
-                    >
-                      <X size={15} /> Reject
-                    </Button>
-                    <Button
-                      disabled={busy}
-                      onClick={() => void decide(pending, true)}
-                    >
-                      <Check size={15} /> Approve & continue
-                    </Button>
-                  </div>
-                </section>
-              )}
               {runningElsewhere && (
                 <p className="thinking">
                   <Loader2 size={14} className="spin" /> A request is running.
@@ -826,13 +701,9 @@ export default function App() {
             <textarea
               ref={textarea}
               aria-label="Message"
-              placeholder={
-                pending
-                  ? "Review the pending action to continue…"
-                  : "Ask anything. It stays here."
-              }
+              placeholder="Ask anything…"
               value={draft}
-              disabled={!!pending || loading || !!runningElsewhere}
+              disabled={loading || !!runningElsewhere}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (
@@ -853,7 +724,7 @@ export default function App() {
                 <select
                   aria-label="Chat model"
                   value={selectedModel}
-                  disabled={busy || !!pending || !!runningElsewhere || loading}
+                  disabled={busy || !!runningElsewhere || loading}
                   onChange={(event) => void changeModel(event.target.value)}
                 >
                   {allModels.map((model) => (
@@ -866,7 +737,7 @@ export default function App() {
               </label>
               <span className="enter-hint">
                 {busy
-                  ? "Working locally…"
+                  ? "Working…"
                   : preferences.enterToSend
                     ? "Enter to send"
                     : "Shift + Enter for a new line"}
@@ -887,7 +758,7 @@ export default function App() {
                   size="icon"
                   aria-label="Send message"
                   disabled={
-                    !draft.trim() || !!pending || loading || !!runningElsewhere
+                    !draft.trim() || loading || !!runningElsewhere
                   }
                 >
                   <ArrowUp size={19} />
@@ -897,16 +768,16 @@ export default function App() {
           </form>
           <div className="composer-foot">
             <span>
-              <ShieldCheck size={12} /> Powered by your machine
+              <ShieldCheck size={12} /> Powered by Groq
             </span>
             <span>AI can make mistakes. Review important results.</span>
           </div>
         </div>
       </main>
       {settings && (
-        <Modal title="Workspace settings" onClose={() => setSettings(false)}>
+        <Modal title="Assistant settings" onClose={() => setSettings(false)}>
           <p className="muted">
-            Preferences are saved in this browser. Chats are saved in SQLite.
+            Preferences are saved in this browser. History is saved on your server. Groq processes prompts; Qdrant processes memory text.
           </p>
           <label className="field">
             Appearance
@@ -991,12 +862,11 @@ export default function App() {
             Press Enter to send messages
           </label>
           <p className="muted">
-            Shift + Enter always inserts a new line. Models must already be
-            installed in Ollama.
+            Shift + Enter always inserts a new line. Models must be enabled for your Groq account.
           </p>
           {modelError && <p className="run-error">{modelError}</p>}
           <Button variant="outline" onClick={() => void refreshModels()}>
-            Refresh installed models
+            Refresh Groq models
           </Button>
           <footer className="creator-credit">
             Designed &amp; built by <strong>Shriyam Verma</strong>
@@ -1044,10 +914,10 @@ export default function App() {
       {remove && (
         <Modal title="Delete conversation?" onClose={() => setRemove(null)}>
           <p className="muted">
-            “{remove.title}” and its messages, summaries, and pending approvals
+            “{remove.title}” and its messages and summaries
             will be permanently deleted.
           </p>
-          <div className="approval-actions">
+          <div className="dialog-actions">
             <Button variant="outline" onClick={() => setRemove(null)}>
               Keep conversation
             </Button>

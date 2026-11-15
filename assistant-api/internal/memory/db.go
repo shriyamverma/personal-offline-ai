@@ -69,7 +69,10 @@ func Open(path string) error {
 			}
 		}
 	}
-	return initConversations()
+	if err := initConversations(); err != nil {
+		return err
+	}
+	return InitCloudIndex()
 }
 
 func SaveMessage(conversationID, role, content string, embedding []float64) error {

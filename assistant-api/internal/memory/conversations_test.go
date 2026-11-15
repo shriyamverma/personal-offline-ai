@@ -44,7 +44,7 @@ func TestConversationIsolationAndDeletion(t *testing.T) {
 	if err != nil || summary != "A" {
 		t.Fatalf("summary leaked: %q %v", summary, err)
 	}
-	r := RunRecord{ID: NewID(), ConversationID: a.ID, Status: "awaiting_approval", State: json.RawMessage(`{"approval_id":"decision-1","pending":{"tool":"shell","command":"pwd"}}`)}
+	r := RunRecord{ID: NewID(), ConversationID: a.ID, Status: "completed", State: json.RawMessage(`{"prompt":"hello","events":[]}`)}
 	if err := CreateRun(r); err != nil {
 		t.Fatal(err)
 	}
@@ -63,32 +63,42 @@ func TestConversationIsolationAndDeletion(t *testing.T) {
 		t.Fatal("deleted other conversation")
 	}
 }
-func TestApprovalClaimAndRestart(t *testing.T) {
+func TestRestartRetiresLegacyPendingActionsAndRunningRequests(t *testing.T) {
 	database(t)
-	c, _ := CreateConversation("Approval", "model")
-	r := RunRecord{ID: NewID(), ConversationID: c.ID, Status: "awaiting_approval", State: json.RawMessage(`{"approval_id":"decision-1","pending":{"tool":"shell","command":"pwd"}}`)}
-	if err := CreateRun(r); err != nil {
-		t.Fatal(err)
+	// Reproduce the index used by databases from the former workspace mode.
+	for _, q := range []string{`DROP INDEX one_active_run`, `CREATE UNIQUE INDEX one_active_run ON runs(conversation_id) WHERE status IN ('running','awaiting_approval')`} {
+		if _, err := DB.Exec(q); err != nil {
+			t.Fatal(err)
+		}
 	}
-	next := r
-	next.ID = NewID()
-	next.Status = "running"
-	if err := CreateRun(next); err != ErrConflict {
-		t.Fatalf("expected active-run conflict, got %v", err)
-	}
-	claimed, err := ClaimApproval(r.ID, "decision-1")
-	if err != nil || string(claimed.State) != string(r.State) {
-		t.Fatalf("claim changed action: %v", err)
-	}
-	if _, err := ClaimApproval(r.ID, "decision-1"); err != ErrConflict {
-		t.Fatalf("replay accepted: %v", err)
-	}
-	if err := initConversations(); err != nil {
-		t.Fatal(err)
-	}
-	runs, _ := Runs(c.ID)
-	if len(runs) != 1 || runs[0].Status != "interrupted" {
-		t.Fatalf("restart left running run: %v", runs)
+	for _, status := range []string{"running", "awaiting_approval"} {
+		c, _ := CreateConversation("Existing chat", "model")
+		if err := SaveMessage(c.ID, "user", "Keep my history", nil); err != nil {
+			t.Fatal(err)
+		}
+		r := RunRecord{ID: NewID(), ConversationID: c.ID, Status: status, State: json.RawMessage(`{"prompt":"old request","events":[]}`)}
+		if err := CreateRun(r); err != nil {
+			t.Fatal(err)
+		}
+		if err := initConversations(); err != nil {
+			t.Fatal(err)
+		}
+		runs, _ := Runs(c.ID)
+		if len(runs) != 1 || runs[0].Status != "interrupted" {
+			t.Fatal("old request remained active", runs)
+		}
+		messages, _ := Messages(c.ID)
+		if len(messages) != 1 || messages[0].Content != "Keep my history" {
+			t.Fatal("history changed")
+		}
+		next := RunRecord{ID: NewID(), ConversationID: c.ID, Status: "running", State: json.RawMessage(`{}`)}
+		if err := CreateRun(next); err != nil {
+			t.Fatal("new chat blocked", err)
+		}
+		next.ID = NewID()
+		if err := CreateRun(next); err != ErrConflict {
+			t.Fatal("concurrent request accepted", err)
+		}
 	}
 }
 func TestMigratesLegacyDatabase(t *testing.T) {

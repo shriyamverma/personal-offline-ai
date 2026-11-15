@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"personal-offline-ai/assistant-api/internal/llm"
 	"personal-offline-ai/assistant-api/internal/memory"
+	"personal-offline-ai/assistant-api/internal/vectors"
 	"strings"
 	"sync"
 )
@@ -26,7 +28,6 @@ func registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/chat", chatHandler)
 	mux.HandleFunc("/conversations", conversationsHandler)
 	mux.HandleFunc("/conversations/", conversationHandler)
-	mux.HandleFunc("/approvals/", approvalHandler)
 	mux.HandleFunc("/models", modelsHandler)
 }
 func healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +64,8 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 func apiError(w http.ResponseWriter, err error) {
 	status := 500
 	if memory.IsNotFound(err) {
-		status = 404
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "The requested conversation no longer exists."})
+		return
 	}
 	if errors.Is(err, memory.ErrConflict) {
 		status = 409
@@ -166,6 +168,18 @@ func conversationHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer unlock()
+		client := vectors.FromEnv()
+		if client.Configured() {
+			store, err := memory.StoreID()
+			if err != nil {
+				apiError(w, err)
+				return
+			}
+			if err := client.DeleteConversation(r.Context(), store, id); err != nil {
+				writeJSON(w, 503, map[string]string{"error": "Cloud memory deletion failed. Conversation retained; retry deletion later."})
+				return
+			}
+		}
 		if err := memory.DeleteConversation(id); err != nil {
 			apiError(w, err)
 			return
@@ -185,22 +199,8 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Prompt = strings.TrimSpace(req.Prompt)
-	// Legacy direct tools still approve exactly the operation supplied in this request.
-	if req.Tool.Tool != "" {
-		out, err := executeToolContext(r.Context(), req.Tool, req.Approved || req.Tool.Approved)
-		if err != nil {
-			writeJSON(w, 400, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, 200, map[string]string{"response": out})
-		return
-	}
 	if req.Prompt == "" || len(req.Prompt) > 64000 {
 		writeJSON(w, 400, map[string]string{"error": "prompt must contain 1–64000 bytes"})
-		return
-	}
-	if req.Approved {
-		writeJSON(w, 400, map[string]string{"error": "agent actions must be approved individually through /approvals/{run_id}"})
 		return
 	}
 	var c memory.Conversation
@@ -232,49 +232,9 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		apiError(w, err)
 		return
 	}
-	respondRun(w, r, e, req.Stream, nil)
+	respondRun(w, r, e, req.Stream)
 }
-func approvalHandler(w http.ResponseWriter, r *http.Request) {
-	if !method(w, r, "POST") {
-		return
-	}
-	id := strings.TrimPrefix(r.URL.Path, "/approvals/")
-	var req struct {
-		Approved   *bool  `json:"approved"`
-		ApprovalID string `json:"approval_id"`
-		Stream     bool   `json:"stream"`
-	}
-	if !decode(w, r, &req) {
-		return
-	}
-	if req.Approved == nil {
-		writeJSON(w, 400, map[string]string{"error": "approved decision is required"})
-		return
-	}
-	// Claim before executing: duplicate requests and concurrent decisions return conflict.
-	record, err := memory.ClaimApproval(id, req.ApprovalID)
-	if err != nil {
-		apiError(w, err)
-		return
-	}
-	unlock, ok := lockConversation(record.ConversationID)
-	if !ok {
-		record.Status = "awaiting_approval"
-		_ = memory.SaveRun(record)
-		apiError(w, memory.ErrConflict)
-		return
-	}
-	defer unlock()
-	e, err := decodeRun(record, nil)
-	if err != nil {
-		record.Status = "failed"
-		_ = memory.SaveRun(record)
-		apiError(w, err)
-		return
-	}
-	respondRun(w, r, e, req.Stream, req.Approved)
-}
-func respondRun(w http.ResponseWriter, r *http.Request, e *execution, stream bool, decision *bool) {
+func respondRun(w http.ResponseWriter, r *http.Request, e *execution, stream bool) {
 	if stream {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -296,59 +256,30 @@ func respondRun(w http.ResponseWriter, r *http.Request, e *execution, stream boo
 		}
 		// Flush immediately, including when model loading takes time.
 		flusher.Flush()
-		if _, err := e.run(r.Context(), decision); err != nil {
+		if _, err := e.run(r.Context()); err != nil {
 			e.emit(StepEvent{Type: "error", Error: err.Error(), RunID: e.record.ID, ConversationID: e.record.ConversationID})
 		}
 		return
 	}
-	answer, err := e.run(r.Context(), decision)
+	answer, err := e.run(r.Context())
 	if err != nil {
 		writeJSON(w, 502, map[string]string{"error": err.Error(), "conversation_id": e.record.ConversationID, "run_id": e.record.ID})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"response": answer, "conversation_id": e.record.ConversationID, "run_id": e.record.ID, "status": e.record.Status, "action": e.state.Pending, "approval_id": e.state.ApprovalID})
+	writeJSON(w, 200, map[string]any{"response": answer, "conversation_id": e.record.ConversationID, "run_id": e.record.ID, "status": e.record.Status})
 }
 func modelsHandler(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "GET") {
 		return
 	}
-	req, err := http.NewRequestWithContext(r.Context(), "GET", ollamaBase+"/api/tags", nil)
+	names, err := llm.FromEnv().Models(r.Context())
 	if err != nil {
-		apiError(w, err)
+		writeJSON(w, 502, map[string]string{"error": err.Error()})
 		return
 	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		writeJSON(w, 502, map[string]string{"error": "Ollama unavailable: " + err.Error()})
+	if len(names) == 0 {
+		writeJSON(w, 502, map[string]string{"error": "No supported chat models are active. Check Groq model permissions and GROQ_CHAT_MODELS."})
 		return
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		writeJSON(w, 502, map[string]string{"error": "could not list local models"})
-		return
-	}
-	var tags struct {
-		Models []struct {
-			Name    string `json:"name"`
-			Details struct {
-				Family   string   `json:"family"`
-				Families []string `json:"families"`
-			} `json:"details"`
-		} `json:"models"`
-	}
-	if err = json.NewDecoder(resp.Body).Decode(&tags); err != nil {
-		apiError(w, err)
-		return
-	}
-	names := []string{}
-	for _, m := range tags.Models {
-		embedding := strings.Contains(m.Details.Family, "bert")
-		for _, family := range m.Details.Families {
-			embedding = embedding || strings.Contains(family, "bert")
-		}
-		if !embedding && m.Name != embedModel && m.Name != embedModel+":latest" {
-			names = append(names, m.Name)
-		}
-	}
-	writeJSON(w, 200, map[string]any{"models": names, "default": chatModel})
+	writeJSON(w, 200, map[string]any{"models": names, "default": chatModel, "provider": "groq", "memory_provider": "qdrant"})
 }

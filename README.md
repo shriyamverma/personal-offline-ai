@@ -1,483 +1,152 @@
-# Personal Offline AI Assistant
+# Shriyam AI
 
-A self-hosted, lightweight personal AI assistant designed to run entirely on local systems with a strong focus on privacy, offline capability, and developer extensibility.
+A personal chat assistant with a React frontend, a Go API, Groq chat generation, and Qdrant Cloud semantic memory. Conversations and summaries are stored in SQLite on your server.
 
-https://github.com/user-attachments/assets/409dae6a-b604-4c3b-bd45-25cb338ae749
+The current application uses cloud services and requires an internet connection. Docker runs the frontend and API; model inference and embeddings run remotely.
 
-This project is focused on learning and building real-world AI assistant infrastructure from scratch, including:
+## Versions
 
-- local LLM orchestration
-- persistent memory
-- semantic retrieval
-- AI backend engineering
-- containerized deployment
-- retrieval-augmented generation (RAG)
+The project maintains two permanent branches:
 
----
+| Branch              | Version                         | Model and memory services                                      |
+| ------------------- | ------------------------------- | -------------------------------------------------------------- |
+| `main`              | Offline assistant               | Local inference and embeddings through Ollama                  |
+| `personal-cloud-ai` | Cloud assistant documented here | Groq chat generation and Qdrant Cloud embeddings and retrieval |
 
-# Features
+Cloud changes target `personal-cloud-ai`. Offline changes target `main`; shared fixes can be cherry-picked between the permanent branches.
 
-## Current Features
+## Features
 
-- Fully offline AI assistant
-- Local LLM inference using Ollama
-- Open WebUI integration
-- Go-based backend API
-- Persistent SQLite memory
-- Conversation history
-- Semantic memory retrieval using embeddings
-- Dockerized architecture
-- Makefile-based developer workflow
-- Multi-step AI agent with autonomous tool planning
-- Hybrid tool routing (rule-based routing + LLM-based planning)
-- Workspace-aware file search and inspection
-- Controlled file creation with explicit approval
-- Restricted shell command execution with explicit approval
-- Git integration (status and diff)
-- Sequential multi-tool execution (up to 4 steps per request)
-- Semantic retrieval using Ollama embeddings
-- Conversation summarization for long-term context
-- Server-Sent Events (SSE) for agent execution progress
+- **Streaming chat:** responses arrive as they are generated, with Markdown rendering and copyable code blocks. Stop an in-progress response from the composer.
+- **Conversation management:** create, reopen, rename, delete, and search conversation titles.
+- **Model selection:** choose a Groq model per conversation and a default model for new chats. Refresh available models in Settings.
+- **Persistent history:** messages, summaries, and request status survive browser refreshes and container restarts.
+- **Conversation memory:** recent messages, automatic summaries, and relevant messages retrieved through Qdrant provide context for replies. Retrieval is scoped to the current conversation and database installation.
+- **Memory recovery:** if Qdrant becomes unavailable after startup, chat falls back to recent history and saved summaries, displays a warning, and retries indexing on later requests.
+- **Appearance settings:** light, dark, or system appearance, with independent palettes for each mode. Available palettes are Forest, Midnight Indigo, Warm Graphite, Paper & Ink, Nordic Blue, and Monochrome.
+- **Responsive interface:** desktop and mobile layouts, browser-saved preferences, and configurable Enter-to-send behavior.
 
----
+## Requirements
 
-# Architecture
+- Docker with Docker Compose.
+- A Groq API key with access to a supported chat model.
+- A Qdrant Cloud cluster with Cloud Inference enabled and a read-write cluster data API key.
 
-```text
-User
-  ↓
-Open WebUI / API Client
-  ↓
-Assistant API (Go)
-  ↓
-Agent Orchestrator
-  ├── Hybrid Router
-  ├── LLM Planner
-  ├── Tool Registry
-  │     ├── File Tools
-  │     ├── Git Tools
-  │     └── Shell Tools
-  │
-  ├── Memory Layer
-  │     ├── SQLite
-  │     ├── Conversation History
-  │     ├── Embeddings
-  │     └── Semantic Retrieval
-  │
-  ↓
-Ollama
-  ↓
-Qwen2.5:3B
-```
+## Quick Start
 
----
+Run these commands from the repository root.
 
-# Tech Stack
-
-| Layer            | Technology     |
-| ---------------- | -------------- |
-| LLM Runtime      | Ollama         |
-| Model            | Qwen2.5:3B     |
-| Backend          | Go             |
-| UI               | Open WebUI     |
-| Database         | SQLite         |
-| Containerization | Docker         |
-| Orchestration    | Docker Compose |
-
----
-
-# Project Structure
-
-```text
-personal-offline-ai/
-│
-├── assistant-api/
-│   ├── internal/
-│   │   ├── agent/
-│   │   │   ├── planner.go
-│   │   │   ├── router.go
-│   │   │   └── router_test.go
-│   │   │
-│   │   ├── memory/
-│   │   │   ├── db.go
-│   │   │   └── models.go
-│   │   │
-│   │   └── tools/
-│   │       ├── types.go
-│   │       ├── registry.go
-│   │       ├── tool.go
-│   │       ├── path.go
-│   │       ├── read_file.go
-│   │       ├── list_files.go
-│   │       ├── search_files.go
-│   │       ├── write_file.go
-│   │       ├── shell.go
-│   │       ├── git.go
-│   │       └── shell_test.go
-│   │
-│   ├── Dockerfile
-│   ├── go.mod
-│   ├── go.sum
-│   └── main.go
-│
-├── ollama/
-│   ├── Dockerfile
-│   └── bootstrap.sh
-│
-├── open-webui/
-│   └── Dockerfile
-│
-├── docker-compose.yml
-├── Makefile
-└── README.md
-```
-
----
-
-# Getting Started
-
-## Prerequisites
-
-Install:
-
-- Docker Desktop
-- Git (for managing the project repository)
-- Go (optional for local development; available inside the assistant-api container)
-
----
-
-# Setup
-
-## 1. Clone Repository
+### 1. Configure the services
 
 ```bash
-git clone https://github.com/shriyamverma/personal-offline-ai
-cd personal-offline-ai
+cp .env.example .env
 ```
 
----
+Fill in these values in `.env`:
 
-## 2. Start Services
+```dotenv
+GROQ_API_KEY=your-groq-api-key
+QDRANT_URL=https://your-cluster-endpoint
+QDRANT_API_KEY=your-qdrant-cluster-data-api-key
+```
+
+Use the Qdrant cluster endpoint and its **data API key**, rather than an account-management token. Enable Cloud Inference in the cluster settings.
+
+Keep `.env` private. It is ignored by Git, and credentials are passed only to the backend container.
+
+### 2. Start the application
 
 ```bash
-make up
+docker compose up -d --build
 ```
 
-or
+Open [http://localhost:3000](http://localhost:3000).
+
+The API validates provider configuration and initializes the Qdrant collection at startup. Both services must be configured before it can start successfully.
+
+### 3. Check the services
 
 ```bash
-docker compose up --build -d
+docker compose ps
+curl -fsS http://localhost:3000/api/
+curl -fsS http://localhost:3000/api/models
 ```
 
----
+The health response should contain `"status":"ok"`. The models response lists configured chat models available through your Groq account.
 
-## 3. Pull Model
+To inspect startup errors:
 
 ```bash
-docker exec -it ollama ollama pull qwen2.5:3b
+docker compose logs --tail=100 assistant-api
 ```
 
----
+## Services
 
-# Services
+| Service       | URL                                            | Purpose        |
+| ------------- | ---------------------------------------------- | -------------- |
+| Shriyam AI    | [http://localhost:3000](http://localhost:3000) | Chat interface |
+| Assistant API | [http://localhost:8000](http://localhost:8000) | Go backend     |
 
-| Service               | URL                                              |
-| --------------------- | ------------------------------------------------ |
-| Shriyam AI (Frontend) | [http://localhost:3000](http://localhost:3000)   |
-| Assistant API         | [http://localhost:8000](http://localhost:8000)   |
-| Ollama API            | [http://localhost:11434](http://localhost:11434) |
-| Open WebUI (Optional) | [http://localhost:3003](http://localhost:3003)   |
+The frontend proxies `/api/` requests to the backend. Compose binds both published ports to `127.0.0.1`.
 
-Shriyam AI is the default chat interface. To enable Open WebUI, run `docker compose --profile legacy-ui up -d`.
+## Configuration
 
----
+| Variable            | Default / purpose                                                                                |
+| ------------------- | ------------------------------------------------------------------------------------------------ |
+| `GROQ_API_KEY`      | Required Groq API key                                                                            |
+| `GROQ_BASE_URL`     | `https://api.groq.com/openai/v1`                                                                 |
+| `CHAT_MODEL`        | `openai/gpt-oss-20b`; backend default for new conversations                                      |
+| `GROQ_CHAT_MODELS`  | `openai/gpt-oss-20b,openai/gpt-oss-120b`; model allowlist, filtered against Groq's active models |
+| `QDRANT_URL`        | Required Qdrant cluster endpoint                                                                 |
+| `QDRANT_API_KEY`    | Required cluster data API key                                                                    |
+| `QDRANT_COLLECTION` | `shriyam_ai_memory_minilm_v1`                                                                    |
+| `DATABASE_PATH`     | `/data/assistant.db` in Docker; `./assistant.db` when running Go directly                        |
 
-# API Usage
+The embedding model is `sentence-transformers/all-minilm-l6-v2`, with 384-dimensional vectors and Cosine distance. The API creates the collection and scope indexes if needed. Use a dedicated collection; an existing collection must match this configuration and embedding model.
 
-## Health Check
+The Compose file sets `DATABASE_PATH` directly. Change that service setting and its storage mount together if you need a different Docker database location.
+
+## History, Memory, and Privacy
+
+SQLite is the source of truth for messages and summaries. Docker persists it in the `assistant_cloud_data` named volume. Qdrant holds embeddings and identifiers used to retrieve messages from the correct SQLite conversation.
+
+Prompts and retrieved context are sent to Groq. Message text and search queries are sent to Qdrant for embedding and retrieval. Qdrant payloads contain identifiers rather than duplicate message bodies. Browser preferences are stored locally in the browser; chat history is stored on the server.
+
+Deleting a conversation removes its Qdrant points before deleting its local history. If remote cleanup fails, the conversation is retained so deletion can be retried.
+
+Existing databases are migrated without discarding messages or summaries. Requests left active by a previous process, including pending operations from older versions, become interrupted at startup so conversations can continue.
+
+## Everyday Commands
 
 ```bash
-curl http://localhost:8000/
+# Start existing containers
+docker compose up -d
+
+# Rebuild after code or configuration changes
+docker compose up -d --build
+
+# Follow logs
+docker compose logs -f
+
+# Stop containers while retaining saved history
+docker compose down
 ```
 
-Expected response:
+## Local Development
 
-```json
-{
-  "status": "ok",
-  "service": "assistant-api"
-}
-```
+For development outside Docker, install Go 1.24.4 or compatible, a C compiler for the SQLite driver, and Node.js 24 with npm.
 
----
-
-## Chat Endpoint
+Start the backend in one terminal using your configured `.env`:
 
 ```bash
-curl -X POST http://localhost:8000/chat \
--H "Content-Type: application/json" \
--d '{"prompt":"Explain Docker simply"}'
+cd assistant-api
+set -a
+source ../.env
+set +a
+go run .
 ```
 
-Example response:
-
-```json
-{
-  "response": "Docker is a containerization platform..."
-}
-```
-
-## Multi-step Agent Execution
-
-The agent can inspect the workspace, execute multiple tools, and use their outputs to generate a final response.
-
-Example:
-
-```bash
-curl -X POST http://localhost:8000/chat \
--H "Content-Type: application/json" \
--d '{
-  "prompt": "Inspect the project in the assistant-api. Start by listing files in \".\". Then inspect the Go entry point and important packages. Explain the architecture, major components, and how requests flow through the application."
-}'
-```
-
-## Streaming Agent Progress
-
-The API also supports Server-Sent Events (SSE) for receiving agent execution progress.
-
-```bash
-curl -N -X POST http://localhost:8000/chat \
--H "Content-Type: application/json" \
--d '{
-  "prompt": "Inspect the project and summarize its architecture",
-  "stream": true
-}'
-```
-
-The stream provides events for:
-
-- Tool execution started
-- Tool execution result
-- Tool execution errors
-- Final agent response
-
-Note: This currently streams agent execution events and the final response, not individual LLM-generated tokens.
-
----
-
-# Memory System
-
-The assistant uses SQLite as its persistent memory store.
-
-## Current capabilities
-
-- Stores user messages and assistant responses.
-- Maintains conversation history.
-- Retrieves recent messages to provide conversational context.
-- Generates embeddings using Ollama's embedding API.
-- Performs semantic retrieval using embedding similarity.
-- Retrieves relevant past conversations based on the current query.
-- Generates conversation summaries periodically to maintain context across longer conversations.
-
-## Architecture
-
-User Query
-↓
-Embedding Generation (Ollama)
-↓
-SQLite Memory Store
-↓
-Semantic Similarity Search
-↓
-Relevant Context
-↓
-LLM Response Generation
-
----
-
-# Tool System
-
-The assistant includes a pluggable tool execution framework that allows the AI agent to interact with the local development workspace.
-
-## Available Tools
-
-| Tool           | Description                         | Approval Required |
-| -------------- | ----------------------------------- | ----------------- |
-| `read_file`    | Reads files from the workspace      | No                |
-| `list_files`   | Lists files and directories         | No                |
-| `search_files` | Searches files within the workspace | No                |
-| `write_file`   | Creates or updates files            | Yes               |
-| `shell`        | Executes restricted shell commands  | Yes               |
-| `git_status`   | Retrieves Git working tree status   | No                |
-| `git_diff`     | Retrieves Git differences           | No                |
-
-## Agent Execution Flow
-
-User Request
-↓
-Assistant API
-↓
-Hybrid Router
-├── Direct Tool Routing
-└── LLM-based Planner
-↓
-Tool Registry
-↓
-Tool Execution
-↓
-Tool Result / Observation
-↓
-Next Planning Step
-↓
-Final LLM Response
-
-## Agent Capabilities
-
-- Understands natural language requests and selects appropriate tools.
-- Supports sequential execution of multiple tools.
-- Uses previous tool outputs when planning subsequent actions.
-- Supports up to 4 tool execution steps per request.
-- Requires explicit approval for potentially destructive operations such as file creation and shell execution.
-- Restricts file operations to the configured workspace.
-- Applies command execution restrictions for shell operations.
-
-## Direct Tool Execution
-
-Tools can also be invoked directly through the API for testing and debugging.
-
-Example:
-
-```bash
-curl -X POST http://localhost:8000/chat \
--H "Content-Type: application/json" \
--d '{"tool":{"tool":"list_files","path":"."}}'
-```
-
-## Approved File Creation
-
-```bash
-curl -X POST http://localhost:8000/chat \
--H "Content-Type: application/json" \
--d '{
-  "approved": true,
-  "tool": {
-    "tool": "write_file",
-    "path": "notes/example.txt",
-    "content": "Created using the personal AI assistant"
-  }
-}'
-```
-
-## Approved Shell Execution
-
-```bash
-curl -X POST http://localhost:8000/chat \
--H "Content-Type: application/json" \
--d '{
-  "approved": true,
-  "tool": {
-    "tool": "shell",
-    "command": "go test ./..."
-  }
-}'
-```
-
----
-
-# Makefile Commands
-
-| Command        | Description                             |
-| -------------- | --------------------------------------- |
-| `make up`      | Start services                          |
-| `make down`    | Stop services                           |
-| `make rebuild` | Rebuild all containers                  |
-| `make logs`    | View logs                               |
-| `make ps`      | View running containers                 |
-| `make clean`   | Remove containers and volumes           |
-| `make shell`   | Open assistant container shell          |
-| `make chat`    | Test chat endpoint                      |
-| `make tool`    | Test tool execution (read_file via API) |
-| `make agent`   | Test the agent endpoint                 |
-
----
-
-# Phase 6 — Custom Frontend & Interactive Agent Experience
-
-Phase 6 adds **Shriyam AI**, a personalized frontend for the existing Go agent, Ollama runtime, and SQLite memory system.
-
-## Frontend Features
-
-- React, TypeScript, Vite, Tailwind CSS, and a shadcn-style Button component.
-- Responsive sidebar and chat layout with light, dark, and system appearance.
-- Personalized welcome, Shriyam AI branding, and creator credit in Settings.
-- Markdown, tables, fenced code rendering, and code copying.
-- Streamed answer tokens and expandable, persistent tool activity.
-- Persistent conversations with automatic titles, rename, title search, and deletion.
-- Installed local model selection and browser-saved preferences.
-- Exact action previews with individual approval/rejection and resumable execution.
-
-## Start the Custom Frontend
-
-```bash
-docker compose up --build -d
-```
-
-Open [http://localhost:3000](http://localhost:3000). Initial model bootstrap downloads `qwen2.5:3b` and `nomic-embed-text` if needed; subsequent inference runs locally.
-
-The frontend connects to the Go API through a same-origin `/api` proxy: Nginx in Docker and Vite during development. The frontend source is in `frontend/`; conversation/API handlers are in `assistant-api/handlers.go`, and resumable agent execution is in `assistant-api/run.go`.
-
-Open WebUI is now optional and can be started with:
-
-```bash
-docker compose --profile legacy-ui up -d
-```
-
-Open WebUI connects directly to Ollama. Use Shriyam AI for the Go agent's memory, tools, and approval workflow.
-
-## Backend Additions
-
-| Method     | Endpoint              | Purpose                                             |
-| ---------- | --------------------- | --------------------------------------------------- |
-| GET        | `/models`             | List installed local chat models                    |
-| GET / POST | `/conversations`      | List or create conversations                        |
-| GET        | `/conversations/{id}` | Load messages, tool activity, and pending approvals |
-| PATCH      | `/conversations/{id}` | Rename a conversation or select its model           |
-| DELETE     | `/conversations/{id}` | Delete a conversation and its associated history    |
-| POST       | `/approvals/{run_id}` | Approve or reject the exact stored operation        |
-
-`POST /chat` now accepts `conversation_id`. If omitted, it creates a new conversation; reuse the returned ID to continue that chat. Memory retrieval and summaries are scoped to each conversation.
-
-**Streaming update:** The earlier streaming section describes Phase 5 behavior. Phase 6 additionally streams individual answer tokens through `token` events, alongside tool activity, approval requests, final responses, and errors.
-
-Agent file/shell operations pause with an exact action preview and a unique `approval_id`. Submit that ID with the decision to resume the stored operation:
-
-```bash
-curl -N http://localhost:8000/approvals/RUN_ID \
--H "Content-Type: application/json" \
--d '{"approved":true,"approval_id":"APPROVAL_ID","stream":true}'
-```
-
-Use `approved:false` to reject. Each subsequent privileged operation needs a separate approval. Request-wide `approved:true` for an agent prompt is rejected; the explicit direct-tool examples above remain supported. File creation remains new-file-only and refuses overwrites.
-
-## Persistent Storage and Upgrade Notes
-
-SQLite now lives at `/data/assistant.db` in the `assistant_data` Docker volume. Existing messages and summaries migrate into an **Imported history** conversation when the earlier database is supplied.
-
-**Before recreating a Phase 5 API container, preserve its `/app/assistant.db` and any WAL/SHM companions.** To migrate an existing container named `assistant-api`:
-
-1. Stop the old container: `docker stop assistant-api`.
-2. Back up its application directory to a location outside the repository: `mkdir -p ../personal-offline-ai-backup`, then `docker cp assistant-api:/app/. ../personal-offline-ai-backup/`. Keep this backup until the imported history is verified.
-3. Build the new API image with `docker compose build assistant-api`, then create its container and data volume without starting it: `docker compose create --no-deps assistant-api`.
-4. Copy the database into the new location: `docker cp ../personal-offline-ai-backup/assistant.db assistant-api:/data/assistant.db`. If the backup contains `assistant.db-wal` or `assistant.db-shm`, copy each into `/data/` as well.
-5. Start the stack with `docker compose up -d` and verify the **Imported history** conversation.
-
-`docker compose down` retains the named volume; `make clean` removes it.
-
-Pending approvals survive browser reloads and backend restarts. Formerly running requests become interrupted after a restart and are not automatically replayed. Stopping a response retains completed tool side effects.
-
-## Frontend Development and Validation
-
-With the backend running, use Node 22.12+ (22.x) or 24.x:
+Start the frontend in a second terminal:
 
 ```bash
 cd frontend
@@ -485,17 +154,50 @@ npm ci
 npm run dev
 ```
 
-Vite serves [http://127.0.0.1:5173](http://127.0.0.1:5173) and proxies to the API at `http://127.0.0.1:8000`. Override `API_PROXY_TARGET` if needed. Backend configuration supports `OLLAMA_URL`, `CHAT_MODEL`, and `DATABASE_PATH`.
+Open [http://localhost:5173](http://localhost:5173). Vite proxies `/api` to `http://127.0.0.1:8000`; set `API_PROXY_TARGET` when using a different backend address.
 
-| Command                                 | Purpose                                             |
-| --------------------------------------- | --------------------------------------------------- |
-| `make frontend-dev`                     | Start the Vite development server                   |
-| `make frontend-build`                   | Check TypeScript and build the frontend             |
-| `make frontend-test`                    | Run SSE parser tests                                |
-| `npm run test:e2e` (inside `frontend/`) | Run browser regression flows using installed Chrome |
+Native development uses its own SQLite file by default, separate from the Docker volume.
 
-Backend regression tests also cover conversation isolation, legacy database migration, approval replay protection, and preserving pending approvals after a disconnect. Run `go test -race ./...` and `go vet ./...` from `assistant-api/` to validate the backend.
+## Validation
 
----
+Backend tests use mock Groq and Qdrant servers and do not require provider credentials:
 
-![Repository Views](https://view-counter-worker.shriyamverma.workers.dev/github?repo=shriyamverma%2Fpersonal-offline-ai)
+```bash
+cd assistant-api
+go test -race ./...
+go vet ./...
+```
+
+Frontend unit tests, production build, and browser tests:
+
+```bash
+cd frontend
+npm ci
+npm test
+npm run build
+npx playwright install --with-deps chrome
+npm run test:e2e
+```
+
+For a manual check, send a message, refresh to verify history, switch models, rename a conversation, and change appearance settings. Save a phrase such as `Remember this test phrase: copper mango lighthouse.`, then ask for it in the same conversation. Open a separate conversation to check that the phrase is not retrieved from the first chat.
+
+The GitHub Actions workflow in `.github/workflows/ci.yml` defines backend checks, frontend and browser tests, and Docker builds for pull requests, pushes to `personal-cloud-ai`, and manual runs. It does not publish images or deploy the application.
+
+## Project Structure
+
+```text
+assistant-api/
+  main.go                  Startup, configuration, and shared API types
+  handlers.go              Health, chat, conversations, and model endpoints
+  run.go                   Streaming responses and conversation summaries
+  cloud_memory.go          Semantic retrieval and indexing retries
+  internal/llm/            Groq client
+  internal/memory/         SQLite persistence and migrations
+  internal/vectors/        Qdrant client
+frontend/
+  src/                     React interface, themes, and API client
+  e2e/                     Browser regression tests
+docker-compose.yml         Frontend, API, and persistent SQLite volume
+.env.example               Backend configuration template
+.github/workflows/ci.yml    Automated checks and image builds
+```

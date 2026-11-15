@@ -23,7 +23,7 @@ type RunRecord struct {
 	State          json.RawMessage `json:"state"`
 }
 
-var ErrConflict = errors.New("conversation has an active run or approval already handled")
+var ErrConflict = errors.New("conversation has an active request")
 
 func NewID() string {
 	var b [16]byte
@@ -38,8 +38,10 @@ func initConversations() error {
 		`INSERT OR IGNORE INTO conversations(id,title,model) SELECT 'legacy','Imported history','qwen2.5:3b' WHERE EXISTS(SELECT 1 FROM messages WHERE conversation_id='legacy')`,
 		`CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id,id)`,
 		`CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,status TEXT NOT NULL,state TEXT NOT NULL)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS one_active_run ON runs(conversation_id) WHERE status IN ('running','awaiting_approval')`,
-		`UPDATE runs SET status='interrupted' WHERE status='running'`,
+		// Retire pending operations from older databases without executing them.
+		`UPDATE runs SET status='interrupted' WHERE status IN ('running','awaiting_approval')`,
+		`DROP INDEX IF EXISTS one_active_run`,
+		`CREATE UNIQUE INDEX one_active_run ON runs(conversation_id) WHERE status='running'`,
 	} {
 		if _, err := DB.Exec(q); err != nil {
 			return err
@@ -149,41 +151,4 @@ func Runs(id string) ([]RunRecord, error) {
 	return out, rows.Err()
 }
 
-// ClaimApproval atomically consumes the pending approval. A replay cannot execute it twice.
-func ClaimApproval(id, approvalID string) (RunRecord, error) {
-	tx, err := DB.Begin()
-	if err != nil {
-		return RunRecord{}, err
-	}
-	defer tx.Rollback()
-	var r RunRecord
-	var state string
-	err = tx.QueryRow(`SELECT id,conversation_id,status,state FROM runs WHERE id=?`, id).Scan(&r.ID, &r.ConversationID, &r.Status, &state)
-	if err != nil {
-		return r, err
-	}
-	var pending struct {
-		ApprovalID string `json:"approval_id"`
-	}
-	if err := json.Unmarshal([]byte(state), &pending); err != nil {
-		return r, err
-	}
-	if approvalID == "" || approvalID != pending.ApprovalID {
-		return r, ErrConflict
-	}
-	if r.Status != "awaiting_approval" {
-		return r, ErrConflict
-	}
-	result, err := tx.Exec(`UPDATE runs SET status='running' WHERE id=? AND status='awaiting_approval'`, id)
-	if err != nil {
-		return r, err
-	}
-	n, _ := result.RowsAffected()
-	if n != 1 {
-		return r, ErrConflict
-	}
-	r.State = json.RawMessage(state)
-	r.Status = "running"
-	return r, tx.Commit()
-}
 func IsNotFound(err error) bool { return errors.Is(err, sql.ErrNoRows) }

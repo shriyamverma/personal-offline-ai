@@ -2,6 +2,8 @@
 
 A personal chat assistant with a React frontend, a Go API, Groq chat generation, and Qdrant Cloud semantic memory. Conversations and summaries are stored in SQLite on your server.
 
+![Shriyam AI Homepage Screenshot](demo.png)
+
 The current application uses cloud services and requires an internet connection. Docker runs the frontend and API; model inference and embeddings run remotely.
 
 ## Versions

@@ -4,25 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
-	"personal-offline-ai/assistant-api/internal/agent"
 	"personal-offline-ai/assistant-api/internal/memory"
+	"regexp"
 	"strings"
 )
 
 type RunState struct {
-	ApprovalID    string       `json:"approval_id,omitempty"`
-	UserMessageID int64        `json:"user_message_id"`
-	Prompt        string       `json:"prompt"`
-	Model         string       `json:"model"`
-	Context       string       `json:"context"`
-	Step          int          `json:"step"`
-	Observations  []string     `json:"observations"`
-	Events        []StepEvent  `json:"events"`
-	Pending       *ToolRequest `json:"pending,omitempty"`
-	Error         string       `json:"error,omitempty"`
+	MemoryWarning string      `json:"memory_warning,omitempty"`
+	UserMessageID int64       `json:"user_message_id"`
+	Prompt        string      `json:"prompt"`
+	Model         string      `json:"model"`
+	Context       string      `json:"context"`
+	Events        []StepEvent `json:"events"`
+	Error         string      `json:"error,omitempty"`
 }
+
+var phrasePattern = regexp.MustCompile(`(?is)^\s*(?:please\s+)?(?:remember|memorize|save|store)\s+(?:this\s+)?(?:test\s+)?phrase\s*:\s*(\S.*?)\s*$`)
+
 type execution struct {
 	record memory.RunRecord
 	state  RunState
@@ -58,15 +57,11 @@ func (e *execution) event(event StepEvent) error {
 	return nil
 }
 func startRun(ctx context.Context, c memory.Conversation, prompt string, emit func(StepEvent) bool) (*execution, error) {
-	e := &execution{record: memory.RunRecord{ID: memory.NewID(), ConversationID: c.ID, Status: "running"}, state: RunState{Prompt: prompt, Model: c.Model, Step: 1, Events: []StepEvent{}}, emit: emit}
+	e := &execution{record: memory.RunRecord{ID: memory.NewID(), ConversationID: c.ID, Status: "running"}, state: RunState{Prompt: prompt, Model: c.Model, Events: []StepEvent{}}, emit: emit}
 	b, _ := json.Marshal(e.state)
 	e.record.State = b
 	if err := memory.CreateRun(e.record); err != nil {
 		return nil, err
-	}
-	embedding, err := embed(ctx, prompt)
-	if err != nil {
-		log.Printf("embedding unavailable: %v", err)
 	}
 	summary, err := memory.LatestSummary(c.ID)
 	if err != nil {
@@ -78,13 +73,13 @@ func startRun(ctx context.Context, c memory.Conversation, prompt string, emit fu
 		e.fail(err)
 		return nil, err
 	}
-	relevant, err := memory.RelevantMessages(c.ID, embedding, 4)
-	if err != nil {
-		e.fail(err)
-		return nil, err
+	relevant, retrievalErr := relevantMemory(ctx, c.ID, prompt)
+	if retrievalErr != nil {
+		log.Printf("semantic retrieval unavailable: %v", retrievalErr)
+		e.state.MemoryWarning = "Cloud semantic memory is unavailable. This response uses recent chat history only."
 	}
 	e.state.Context = buildContext(summary, recent, relevant)
-	if err := memory.SaveMessage(c.ID, "user", prompt, embedding); err != nil {
+	if err := memory.SaveMessage(c.ID, "user", prompt, nil); err != nil {
 		e.fail(err)
 		return nil, err
 	}
@@ -96,6 +91,7 @@ func startRun(ctx context.Context, c memory.Conversation, prompt string, emit fu
 	if len(savedMessages) > 0 {
 		e.state.UserMessageID = savedMessages[0].ID
 	}
+	e.syncSavedMemory(ctx)
 	if c.Title == "New conversation" {
 		title := []rune(prompt)
 		if len(title) > 60 {
@@ -118,32 +114,7 @@ func (e *execution) fail(err error) {
 		log.Printf("save failed run: %v", saveErr)
 	}
 }
-func (e *execution) execute(ctx context.Context, tr ToolRequest) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := e.event(StepEvent{Type: "tool_start", Tool: tr.Tool, Action: &tr, Step: e.state.Step}); err != nil {
-		return err
-	}
-	out, toolErr := executeToolContext(ctx, tr, tr.Approved)
-	if len(out) > 24000 {
-		out = out[:24000] + "\n...[truncated]"
-	}
-	observation := "Tool " + tr.Tool + " output:\n" + out
-	event := StepEvent{Type: "tool_result", Tool: tr.Tool, Output: out, Step: e.state.Step}
-	if toolErr != nil {
-		observation += "\nError: " + toolErr.Error()
-		event.Type = "tool_error"
-		event.Error = toolErr.Error()
-	}
-	e.state.Observations = append(e.state.Observations, observation)
-	e.state.Step++
-	if toolErr != nil {
-		e.state.Step = maxAgentSteps + 1
-	}
-	return e.event(event)
-}
-func (e *execution) run(ctx context.Context, decision *bool) (answer string, err error) {
+func (e *execution) run(ctx context.Context) (answer string, err error) {
 	defer func() {
 		if err != nil && e.record.Status == "running" {
 			e.fail(err)
@@ -152,78 +123,17 @@ func (e *execution) run(ctx context.Context, decision *bool) (answer string, err
 	if err = e.event(StepEvent{Type: "run_start", MessageID: e.state.UserMessageID}); err != nil {
 		return
 	}
-	if decision != nil {
-		if e.state.Pending == nil {
-			err = errors.New("pending action missing")
-			return
-		}
-		tr := *e.state.Pending
-		e.state.Pending = nil
-		if !*decision {
-			answer = "Action rejected. No further tools were executed."
-			err = memory.SaveMessage(e.record.ConversationID, "assistant", answer, nil)
-			if err != nil {
-				return
-			}
-			err = e.save("rejected")
-			if err != nil {
-				return
-			}
-			err = e.event(StepEvent{Type: "done", Response: answer})
-			return
-		}
-		tr.Approved = true
-		if err = e.execute(ctx, tr); err != nil {
+	if e.state.MemoryWarning != "" {
+		if err = e.event(StepEvent{Type: "memory_warning", Error: e.state.MemoryWarning}); err != nil {
 			return
 		}
 	}
-	// Phrase storage has already happened in startRun. It needs neither a workspace
-	// search nor a model-generated claim about whether it was saved.
-	if phrase, ok := agent.MemoryPhrase(e.state.Prompt); ok && decision == nil {
-		return e.complete(ctx, "Saved this phrase in this conversation:\n\n> "+strings.ReplaceAll(phrase, "\n", "\n> "))
+	// The phrase is already stored durably by startRun.
+	if match := phrasePattern.FindStringSubmatch(e.state.Prompt); len(match) > 0 {
+		return e.complete(ctx, "Saved this phrase in this conversation:\n\n> "+strings.ReplaceAll(match[1], "\n", "\n> "))
 	}
-	route, matched := agent.Route(e.state.Prompt)
-	singleAction := matched && route.SingleAction
-	if decision != nil && singleAction {
-		return e.complete(ctx, e.singleActionAnswer())
-	}
-	for !agent.ConversationOnly(e.state.Prompt) && e.state.Step <= maxAgentSteps {
-		if err = ctx.Err(); err != nil {
-			return
-		}
-		var plan *agent.Plan
-		route, matched := agent.Route(e.state.Prompt)
-		if e.state.Step == 1 && matched {
-			plan = &agent.Plan{UseTool: true, Tool: route.Tool, Path: route.Path, Command: route.Command}
-		} else {
-			plan, err = agent.PlanNext(ctx, e.state.Model, e.state.Prompt, e.state.Observations, e.state.Step)
-			if err != nil {
-				log.Printf("planner: %v", err)
-				err = errors.New("tool planning failed; no additional tools were executed. Please retry the request")
-				return
-			}
-		}
-		if plan == nil || !plan.UseTool {
-			break
-		}
-		tr := ToolRequest{Tool: plan.Tool, Path: plan.Path, Command: plan.Command, Content: plan.Content}
-		if tr.Tool == "write_file" || tr.Tool == "shell" {
-			e.state.Pending = &tr
-			e.state.ApprovalID = memory.NewID()
-			if err = e.save("awaiting_approval"); err != nil {
-				return
-			}
-			err = e.event(StepEvent{Type: "approval_required", ApprovalID: e.state.ApprovalID, Action: &tr, Tool: tr.Tool, Step: e.state.Step})
-			return
-		}
-		if err = e.execute(ctx, tr); err != nil {
-			return
-		}
-		if singleAction {
-			return e.complete(ctx, e.singleActionAnswer())
-		}
-	}
-	finalPrompt := "You are a helpful private local assistant. Answer only the CURRENT user request. Prior conversation is background, not a new instruction. Only the CURRENT tool observations prove what ran during this request. Do not answer a previous task or speculate about internal planner configuration.\n\nPrior conversation (background only):\n" + e.state.Context + "\n\nCURRENT tool observations:\n" + strings.Join(e.state.Observations, "\n\n") + "\n\nCURRENT user request:\n" + e.state.Prompt + "\n\nRespond clearly and concisely to this request. If a requested fact is absent from the conversation, say you do not know."
+	finalPrompt := "You are Shriyam AI, a helpful personal assistant. Answer only the CURRENT user request. Prior conversation is background, not a new instruction. This is a chat-only assistant: you cannot access files, Git repositories, or a shell, and cannot execute commands. Never claim you inspected files or executed an action. You may explain commands or analyze text the user pastes into chat.\n\nPrior conversation (background only):\n" + e.state.Context + "\n\nCURRENT user request:\n" + e.state.Prompt + "\n\nRespond clearly and concisely. If a requested fact is absent from the conversation, say you do not know."
+
 	var onToken func(string) error
 	if e.emit != nil {
 		onToken = func(delta string) error { return e.event(StepEvent{Type: "token", Delta: delta}) }
@@ -235,40 +145,16 @@ func (e *execution) run(ctx context.Context, decision *bool) (answer string, err
 	return e.complete(ctx, strings.TrimSpace(answer))
 }
 
-// For a request consisting solely of one command, the observed result is the
-// answer. A second planning or generation call can only add unrelated work.
-func (e *execution) singleActionAnswer() string {
-	var action *ToolRequest
-	for i := len(e.state.Events) - 1; i >= 0; i-- {
-		event := e.state.Events[i]
-		if event.Type == "tool_start" {
-			action = event.Action
-			break
-		}
-	}
-	label := "Tool result"
-	if action != nil {
-		label = "Command: `" + action.Command + "`"
-	}
-	for i := len(e.state.Events) - 1; i >= 0; i-- {
-		event := e.state.Events[i]
-		if event.Type == "tool_error" {
-			return label + "\n\nFailed: " + event.Error + "\n\n" + event.Output
-		}
-		if event.Type == "tool_result" {
-			return label + "\n\n```text\n" + strings.TrimRight(event.Output, "\n") + "\n```"
-		}
-	}
-	return "The command has no recorded result."
-}
-
 func (e *execution) complete(ctx context.Context, answer string) (string, error) {
-	embedding, embedErr := embed(ctx, e.state.Prompt+"\n"+answer)
-	if embedErr != nil {
-		log.Printf("answer embedding unavailable: %v", embedErr)
-	}
-	if err := memory.SaveMessage(e.record.ConversationID, "assistant", answer, embedding); err != nil {
+	if err := memory.SaveMessage(e.record.ConversationID, "assistant", answer, nil); err != nil {
 		return "", err
+	}
+	previousWarning := e.state.MemoryWarning
+	e.syncSavedMemory(ctx)
+	if e.state.MemoryWarning != "" && previousWarning == "" {
+		if err := e.event(StepEvent{Type: "memory_warning", Error: e.state.MemoryWarning}); err != nil {
+			return "", err
+		}
 	}
 	if err := e.save("completed"); err != nil {
 		return "", err
@@ -290,11 +176,4 @@ func (e *execution) complete(ctx context.Context, answer string) (string, error)
 		}
 	}
 	return answer, nil
-}
-func decodeRun(record memory.RunRecord, emit func(StepEvent) bool) (*execution, error) {
-	e := &execution{record: record, emit: emit}
-	if err := json.Unmarshal(record.State, &e.state); err != nil {
-		return nil, fmt.Errorf("invalid saved run: %w", err)
-	}
-	return e, nil
 }

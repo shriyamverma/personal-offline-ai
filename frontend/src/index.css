@@ -612,66 +612,9 @@ textarea {
   border: 0;
   background: none;
 }
-.timeline {
+.response-status {
   font-size: 11px;
   margin: 0 0 20px;
-}
-.timeline details {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  margin: 6px 0;
-  overflow: hidden;
-}
-.timeline summary {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  cursor: pointer;
-  padding: 11px 13px;
-  list-style: none;
-}
-.timeline summary::-webkit-details-marker {
-  display: none;
-}
-.tool-icon {
-  display: flex;
-  color: var(--accent);
-}
-.timeline summary > span:nth-child(2) {
-  display: flex;
-  gap: 7px;
-  align-items: center;
-  min-width: 0;
-}
-.timeline small {
-  font-size: 10px;
-  color: var(--muted);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  max-width: 260px;
-}
-.tool-status {
-  margin-left: auto;
-  white-space: nowrap;
-  color: var(--muted);
-  font-size: 9px;
-}
-.timeline pre,
-.approval pre {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  overflow: auto;
-  max-height: 320px;
-  padding: 12px 15px;
-  background: var(--side);
-  margin: 0;
-  font-size: 11px;
-  line-height: 1.7;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-}
-.timeline details > p {
-  padding: 10px;
 }
 .thinking {
   display: flex;
@@ -681,46 +624,7 @@ textarea {
   font-size: 11px;
   padding: 12px 0;
 }
-.approval {
-  border: 1px solid #c6a761;
-  background: var(--panel);
-  border-radius: 12px;
-  padding: 22px;
-  margin: 20px 0;
-}
-.approval-heading {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  color: var(--accent);
-}
-.approval h2 {
-  font-size: 14px;
-  font-weight: 600;
-  margin: 0;
-}
-.approval-heading p {
-  font-size: 11px;
-  color: var(--muted);
-  margin: 5px 0 0;
-}
-.approval-operation {
-  margin: 18px 0;
-}
-.approval-operation > strong {
-  display: block;
-  font-family: monospace;
-  font-size: 11px;
-  margin-bottom: 8px;
-}
-.approval-operation .section-label {
-  margin: 16px 0 8px;
-}
-.approval pre {
-  border: 1px solid var(--border);
-  border-radius: 5px;
-}
-.approval-actions {
+.dialog-actions {
   display: flex;
   justify-content: flex-end;
   gap: 9px;
@@ -966,13 +870,7 @@ dialog::backdrop {
   .message {
     font-size: 13px;
   }
-  .timeline small {
-    max-width: 130px;
-  }
-  .approval {
-    padding: 16px;
-  }
-  .approval-actions {
+  .dialog-actions {
     flex-wrap: wrap;
   }
 }

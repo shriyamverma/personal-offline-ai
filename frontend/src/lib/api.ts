@@ -1,12 +1,25 @@
 export interface Conversation { id: string; title: string; model: string; created_at: string; updated_at: string }
 export interface Message { id: number; role: string; content: string; created_at?: string }
-export interface Action { tool: string; path?: string; command?: string; content?: string }
-export interface RunEvent { approval_id?: string; message_id?: number; type: string; tool?: string; step?: number; output?: string; error?: string; response?: string; delta?: string; run_id?: string; conversation_id?: string; action?: Action }
-export interface Run { id: string; conversation_id: string; status: string; state: { approval_id?: string; user_message_id?: number; prompt: string; events: RunEvent[]; pending?: Action; error?: string } }
+export interface RunEvent { message_id?: number; type: string; error?: string; response?: string; delta?: string; run_id?: string; conversation_id?: string }
+export interface Run { id: string; conversation_id: string; status: string; state: { user_message_id?: number; prompt: string; events: RunEvent[]; error?: string } }
 export interface Detail { conversation: Conversation; messages: Message[]; runs: Run[] }
+export class ApiError extends Error {
+ constructor(public readonly status: number, message: string) { super(message); this.name = 'ApiError' }
+}
+async function responseError(response: Response): Promise<ApiError> {
+ const body = await response.text()
+ try {
+  const parsed = JSON.parse(body) as { error?: unknown }
+  if (typeof parsed.error === 'string') return new ApiError(response.status, parsed.error)
+ } catch { /* Proxies may return HTML while the API is starting. */ }
+ const message = response.status >= 500
+  ? `The server is unavailable (HTTP ${response.status}). It may still be starting; please try again shortly.`
+  : `Request failed (HTTP ${response.status}).`
+ return new ApiError(response.status, message)
+}
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
  const response = await fetch('/api' + path, { ...options, headers: { 'Content-Type': 'application/json', ...options.headers } })
- if (!response.ok) { const body = await response.text(); try { throw new Error(JSON.parse(body).error || body) } catch (error) { if (error instanceof SyntaxError) throw new Error(body || response.statusText); throw error } }
+ if (!response.ok) throw await responseError(response)
  if (response.status === 204) return undefined as T
  return response.json()
 }
@@ -17,7 +30,7 @@ export async function consumeSSE(body: ReadableStream<Uint8Array>, onEvent: (eve
   if (!data) return
   const event = JSON.parse(data) as RunEvent
   onEvent(event)
-  if (['done', 'error', 'approval_required'].includes(event.type)) terminal = true
+  if (['done', 'error'].includes(event.type)) terminal = true
  }
  try {
   for (;;) {
@@ -32,7 +45,7 @@ export async function consumeSSE(body: ReadableStream<Uint8Array>, onEvent: (eve
 }
 export async function stream(path: string, payload: unknown, signal: AbortSignal, onEvent: (event: RunEvent) => void) {
  const response = await fetch('/api' + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal })
- if (!response.ok) { const body = await response.text(); let message = body; try { message = JSON.parse(body).error || body } catch { /* plain HTTP error */ } throw new Error(message) }
+ if (!response.ok) throw await responseError(response)
  if (!response.body) throw new Error('Streaming is unavailable in this browser.')
  await consumeSSE(response.body, onEvent)
 }

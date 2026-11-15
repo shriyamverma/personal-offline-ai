@@ -9,7 +9,7 @@ export interface Preferences {
 }
 export const DEFAULT_PREFERENCES: Preferences = {
   theme: 'system', lightTheme: DEFAULT_LIGHT_THEME, darkTheme: DEFAULT_DARK_THEME,
-  model: 'qwen2.5:3b', enterToSend: true,
+  model: 'openai/gpt-oss-20b', enterToSend: true,
 }
 // Older preferences have only theme/model/enterToSend. Preserve them while adding
 // independent palettes; stale or invalid palette IDs fall back to the defaults.

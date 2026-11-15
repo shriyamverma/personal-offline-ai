@@ -10,3 +10,9 @@ dist/
 test-results/
 playwright-report/
 /docs/
+
+.env
+.env.*
+!.env.example
+
+/workspace/

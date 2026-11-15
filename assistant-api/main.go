@@ -1,157 +1,40 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"personal-offline-ai/assistant-api/internal/llm"
 	"personal-offline-ai/assistant-api/internal/memory"
-	"personal-offline-ai/assistant-api/internal/tools"
+	"personal-offline-ai/assistant-api/internal/vectors"
 )
 
-var ollamaBase = env("OLLAMA_URL", "http://ollama:11434")
-var ollamaURL = ollamaBase + "/api/generate"
-var embedURL = ollamaBase + "/api/embed"
-var chatModel = env("CHAT_MODEL", "qwen2.5:3b")
+var chatModel = env("CHAT_MODEL", llm.DefaultModel)
 
-const embedModel = "nomic-embed-text"
-const maxAgentSteps = 4
-
-var httpClient = &http.Client{Timeout: 120 * time.Second}
-
-type ToolRequest struct {
-	Tool     string `json:"tool"`
-	Path     string `json:"path,omitempty"`
-	Command  string `json:"command,omitempty"`
-	Content  string `json:"content,omitempty"`
-	Approved bool   `json:"approved,omitempty"`
-}
 type ChatRequest struct {
-	Prompt         string      `json:"prompt"`
-	ConversationID string      `json:"conversation_id"`
-	Model          string      `json:"model"`
-	Tool           ToolRequest `json:"tool,omitempty"`
-	Stream         bool        `json:"stream,omitempty"`
-	Approved       bool        `json:"approved,omitempty"`
-}
-type OllamaRequest struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
-	Stream bool   `json:"stream"`
-}
-type OllamaResponse struct {
-	Response string `json:"response"`
-	Done     bool   `json:"done"`
-}
-type EmbedRequest struct {
-	Model string `json:"model"`
-	Input string `json:"input"`
-}
-type EmbedResponse struct {
-	Embeddings [][]float64 `json:"embeddings"`
+	Prompt         string `json:"prompt"`
+	ConversationID string `json:"conversation_id"`
+	Model          string `json:"model"`
+	Stream         bool   `json:"stream,omitempty"`
 }
 type StepEvent struct {
-	ApprovalID     string       `json:"approval_id,omitempty"`
-	MessageID      int64        `json:"message_id,omitempty"`
-	Type           string       `json:"type"`
-	Tool           string       `json:"tool,omitempty"`
-	Output         string       `json:"output,omitempty"`
-	Error          string       `json:"error,omitempty"`
-	Response       string       `json:"response,omitempty"`
-	Step           int          `json:"step,omitempty"`
-	Delta          string       `json:"delta,omitempty"`
-	RunID          string       `json:"run_id,omitempty"`
-	ConversationID string       `json:"conversation_id,omitempty"`
-	Action         *ToolRequest `json:"action,omitempty"`
+	MessageID      int64  `json:"message_id,omitempty"`
+	Type           string `json:"type"`
+	Error          string `json:"error,omitempty"`
+	Response       string `json:"response,omitempty"`
+	Delta          string `json:"delta,omitempty"`
+	RunID          string `json:"run_id,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
 }
 
-func executeToolContext(ctx context.Context, t ToolRequest, approved bool) (string, error) {
-	tool, ok := tools.Get(t.Tool)
-	if !ok {
-		return "", errors.New("unknown tool: " + t.Tool)
-	}
-	result := tool.Execute(tools.ExecuteParams{Context: ctx, Path: t.Path, Command: t.Command, Content: t.Content, Approved: approved || t.Approved})
-	if result.Error != "" {
-		return result.Output, errors.New(result.Error)
-	}
-	return result.Output, nil
-}
 func generate(ctx context.Context, model, prompt string, onToken func(string) error) (string, error) {
-	body, err := json.Marshal(OllamaRequest{Model: model, Prompt: prompt, Stream: onToken != nil})
-	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ollamaURL, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("ollama returned %s: %s", resp.Status, string(b))
-	}
-	decoder := json.NewDecoder(resp.Body)
-	var answer strings.Builder
-	for {
-		var chunk struct {
-			Response string `json:"response"`
-			Done     bool   `json:"done"`
-			Error    string `json:"error"`
-		}
-		if err = decoder.Decode(&chunk); err != nil {
-			return "", fmt.Errorf("incomplete model response: %w", err)
-		}
-		if chunk.Error != "" {
-			return "", errors.New(chunk.Error)
-		}
-		answer.WriteString(chunk.Response)
-		if onToken != nil && chunk.Response != "" {
-			if err = onToken(chunk.Response); err != nil {
-				return "", err
-			}
-		}
-		if onToken == nil || chunk.Done {
-			return answer.String(), nil
-		}
-	}
-}
-func embed(ctx context.Context, input string) ([]float64, error) {
-	body, _ := json.Marshal(EmbedRequest{Model: embedModel, Input: input})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, embedURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return nil, fmt.Errorf("embedding model unavailable: %s", string(b))
-	}
-	var result EmbedResponse
-	if err = json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-	if len(result.Embeddings) == 0 {
-		return nil, errors.New("empty embedding response")
-	}
-	return result.Embeddings[0], nil
+	return llm.FromEnv().Generate(ctx, model, prompt, onToken)
 }
 func buildContext(summary string, recent []memory.Message, relevant []memory.ScoredMessage) string {
 	var b strings.Builder
@@ -183,8 +66,27 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 func main() {
+	if err := llm.FromEnv().Validate(); err != nil {
+		log.Fatal(err)
+	}
+	if err := vectors.FromEnv().Validate(); err != nil {
+		log.Fatal(err)
+	}
 	if err := memory.InitDB(); err != nil {
 		log.Fatal("memory initialization failed: ", err)
+	}
+	defer memory.DB.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	vectorClient := vectors.FromEnv()
+	if err := vectorClient.Ensure(ctx); err != nil {
+		cancel()
+		log.Fatal("cloud memory initialization failed: ", err)
+	}
+	cancel()
+	if vectorClient.Created {
+		if err := memory.ResetCloudIndex(vectorClient.Identity()); err != nil {
+			log.Fatal("cloud index reset failed: ", err)
+		}
 	}
 	mux := http.NewServeMux()
 	registerRoutes(mux)
